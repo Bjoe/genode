@@ -1058,7 +1058,11 @@ class Platform::Root : public Genode::Root_component<Session_component>
 
 			try {
 				_parse_report_rom(env, acpi_rom, acpi_platform);
-			} catch (...) {
+            } catch (int &e) {
+                Genode::error("ACPI report parsing error. Exception type int: ", e);
+                Genode::error("ACPI ROM: ", acpi_rom);
+                throw;
+            } catch (...) {
 				Genode::error("ACPI report parsing error.");
 				throw;
 			}
