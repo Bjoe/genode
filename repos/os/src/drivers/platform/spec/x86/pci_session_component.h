@@ -835,13 +835,13 @@ class Platform::Root : public Genode::Root_component<Session_component>
 		{
 			using namespace Genode;
 
-			Xml_node xml_acpi(acpi_rom);
+            Xml_node xml_acpi(acpi_rom);
 			if (!xml_acpi.has_type("acpi"))
 				throw 1;
 
 			xml_acpi.for_each_sub_node("bdf", [&] (Xml_node &node) {
 
-				uint32_t const bdf_start  = node.attribute_value("start", 0U);
+                uint32_t const bdf_start  = node.attribute_value("start", 0U);
 				uint32_t const func_count = node.attribute_value("count", 0U);
 				addr_t   const base       = node.attribute_value("base", 0UL);
 

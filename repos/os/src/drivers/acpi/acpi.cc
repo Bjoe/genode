@@ -32,7 +32,7 @@
 using namespace Genode;
 
 /* enable debugging output */
-static const bool verbose = false;
+static const bool verbose = true;
 
 
 /**
