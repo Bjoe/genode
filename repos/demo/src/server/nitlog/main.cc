@@ -18,10 +18,10 @@
 #include <base/session_label.h>
 #include <root/component.h>
 #include <log_session/log_session.h>
-#include <nitpicker_session/connection.h>
+#include <gui_session/connection.h>
 #include <timer_session/connection.h>
 #include <input/event.h>
-#include <os/pixel_rgb565.h>
+#include <os/pixel_rgb888.h>
 
 /*
  * Nitpicker's graphics backend
@@ -125,8 +125,8 @@ class Log_entry
 		Log_entry(Genode::Color color, const char *label, const char *log_text, const char *log_attr, int id):
 			_color(color), _id(id)
 		{
-			Genode::strncpy(_label, label,    sizeof(_label));
-			Genode::strncpy(_text,  log_text, sizeof(_text));
+			Genode::copy_cstring(_label, label,    sizeof(_label));
+			Genode::copy_cstring(_text,  log_text, sizeof(_text));
 
 			_label_len = Genode::strlen(_label);
 			_text_len  = Genode::strlen(_text);
@@ -185,15 +185,15 @@ class Log_window
 {
 	private:
 
-		Canvas_base &_canvas;
-		Font  const &_font;
-		Log_entry    _entries[LOG_H];    /* log entries                           */
-		int          _dst_entry = 0;     /* destination entry for next write      */
-		int          _view_pos  = 0;     /* current view port on the entry array  */
-		bool         _scroll    = false; /* scroll mode (when text hits bottom)   */
-		char         _attr[LOG_W];       /* character attribute buffer            */
-		bool         _dirty     = true;  /* schedules the log window for a redraw */
-		Genode::Lock _dirty_lock { };
+		Canvas_base  &_canvas;
+		Font  const  &_font;
+		Log_entry     _entries[LOG_H];    /* log entries                           */
+		int           _dst_entry = 0;     /* destination entry for next write      */
+		int           _view_pos  = 0;     /* current view port on the entry array  */
+		bool          _scroll    = false; /* scroll mode (when text hits bottom)   */
+		char          _attr[LOG_W];       /* character attribute buffer            */
+		bool          _dirty     = true;  /* schedules the log window for a redraw */
+		Genode::Mutex _dirty_mutex { };
 
 	public:
 
@@ -226,7 +226,7 @@ class Log_window
 				_scroll = true;
 
 			/* schedule log window for redraw */
-			Genode::Lock::Guard lock_guard(_dirty_lock);
+			Genode::Mutex::Guard guard(_dirty_mutex);
 			_dirty |= 1;
 		}
 
@@ -238,7 +238,7 @@ class Log_window
 		bool draw()
 		{
 			{
-				Genode::Lock::Guard lock_guard(_dirty_lock);
+				Genode::Mutex::Guard guard(_dirty_mutex);
 				if (!_dirty) return false;
 				_dirty = false;
 			}
@@ -302,15 +302,14 @@ class Nitlog::Session_component : public Rpc_object<Log_session>
 		 ** Log session interface **
 		 ***************************/
 
-		size_t write(String const &log_text) override
+		void write(String const &log_text) override
 		{
 			if (!log_text.valid_string()) {
 				error("corrupted string");
-				return 0;
+				return;
 			}
 
 			_log_window.write(_color, _label.string(), log_text.string(), _id);
-			return strlen(log_text.string());
 		}
 };
 
@@ -352,22 +351,22 @@ class Log_view
 {
 	private:
 
-		Nitpicker::Session_client      &_nitpicker;
-		Nitpicker::Point                _pos;
-		Nitpicker::Area                 _size;
-		Nitpicker::Session::View_handle _handle;
+		Gui::Session_client      &_gui;
+		Gui::Point                _pos;
+		Gui::Area                 _size;
+		Gui::Session::View_handle _handle;
 
-		typedef Nitpicker::Session::Command     Command;
-		typedef Nitpicker::Session::View_handle View_handle;
+		typedef Gui::Session::Command     Command;
+		typedef Gui::Session::View_handle View_handle;
 
 	public:
 
-		Log_view(Nitpicker::Session_client &nitpicker, Nitpicker::Rect geometry)
+		Log_view(Gui::Session_client &gui, Gui::Rect geometry)
 		:
-			_nitpicker(nitpicker),
+			_gui(gui),
 			_pos(geometry.p1()),
 			_size(geometry.area()),
-			_handle(nitpicker.create_view())
+			_handle(gui.create_view())
 		{
 			move(_pos);
 			top();
@@ -375,20 +374,20 @@ class Log_view
 
 		void top()
 		{
-			_nitpicker.enqueue<Command::To_front>(_handle, View_handle());
-			_nitpicker.execute();
+			_gui.enqueue<Command::To_front>(_handle, View_handle());
+			_gui.execute();
 		}
 
-		void move(Nitpicker::Point pos)
+		void move(Gui::Point pos)
 		{
 			_pos = pos;
 
-			Nitpicker::Rect rect(_pos, _size);
-			_nitpicker.enqueue<Command::Geometry>(_handle, rect);
-			_nitpicker.execute();
+			Gui::Rect rect(_pos, _size);
+			_gui.enqueue<Command::Geometry>(_handle, rect);
+			_gui.execute();
 		}
 
-		Nitpicker::Point pos() const { return _pos; }
+		Gui::Point pos() const { return _pos; }
 };
 
 
@@ -405,23 +404,22 @@ struct Nitlog::Main
 	unsigned const _win_h = _font.bounding_box().h() * LOG_H + 2;
 
 	/* init sessions to the required external services */
-	Nitpicker::Connection _nitpicker { _env };
-	Timer::Connection     _timer     { _env };
+	Gui::Connection   _gui   { _env };
+	Timer::Connection _timer { _env };
 
-	void _init_nitpicker_buffer()
+	void _init_gui_buffer()
 	{
-		_nitpicker.buffer(Framebuffer::Mode(_win_w, _win_h,
-		                  Framebuffer::Mode::RGB565), false);
+		_gui.buffer(Framebuffer::Mode { .area = { _win_w, _win_h } }, false);
 	}
 
-	bool const _nitpicker_buffer_initialized = (_init_nitpicker_buffer(), true);
+	bool const _gui_buffer_initialized = (_init_gui_buffer(), true);
 
 	Sliced_heap _sliced_heap { _env.ram(), _env.rm() };
 
 	/* create log window */
-	Attached_dataspace _fb_ds { _env.rm(), _nitpicker.framebuffer()->dataspace() };
+	Attached_dataspace _fb_ds { _env.rm(), _gui.framebuffer()->dataspace() };
 
-	Canvas<Pixel_rgb565> _canvas { _fb_ds.local_addr<Pixel_rgb565>(),
+	Canvas<Pixel_rgb888> _canvas { _fb_ds.local_addr<Pixel_rgb888>(),
 	                               ::Area(_win_w, _win_h) };
 
 	Log_window _log_window { _canvas, _font };
@@ -439,18 +437,18 @@ struct Nitlog::Main
 	bool const _canvas_initialized = (_init_canvas(), true);
 
 	/* create view for log window */
-	Nitpicker::Rect const _view_geometry { Nitpicker::Point(20, 20),
-	                                       Nitpicker::Area(_win_w, _win_h) };
-	Log_view _view { _nitpicker, _view_geometry };
+	Gui::Rect const _view_geometry { Gui::Point(20, 20),
+	                                 Gui::Area(_win_w, _win_h) };
+	Log_view _view { _gui, _view_geometry };
 
 	/* create root interface for service */
 	Root _root { _env.ep(), _sliced_heap, _log_window };
 
-	Attached_dataspace _ev_ds { _env.rm(), _nitpicker.input()->dataspace() };
+	Attached_dataspace _ev_ds { _env.rm(), _gui.input()->dataspace() };
 
-	Nitpicker::Point const _initial_mouse_pos { -1, -1 };
+	Gui::Point const _initial_mouse_pos { -1, -1 };
 
-	Nitpicker::Point _old_mouse_pos = _initial_mouse_pos;
+	Gui::Point _old_mouse_pos = _initial_mouse_pos;
 
 	unsigned _key_cnt = 0;
 
@@ -461,7 +459,7 @@ struct Nitlog::Main
 	{
 		Input::Event const *ev_buf = _ev_ds.local_addr<Input::Event const>();
 
-		for (int i = 0, num_ev = _nitpicker.input()->flush(); i < num_ev; i++) {
+		for (int i = 0, num_ev = _gui.input()->flush(); i < num_ev; i++) {
 
 			Input::Event const &ev = ev_buf[i];
 
@@ -471,7 +469,7 @@ struct Nitlog::Main
 			/* move view */
 			ev.handle_absolute_motion([&] (int x, int y) {
 
-				Nitpicker::Point const mouse_pos(x, y);
+				Gui::Point const mouse_pos(x, y);
 
 				if (_key_cnt && _old_mouse_pos != _initial_mouse_pos)
 					_view.move(_view.pos() + mouse_pos - _old_mouse_pos);
@@ -492,7 +490,7 @@ struct Nitlog::Main
 	void _handle_timer()
 	{
 		if (_log_window.draw())
-			_nitpicker.framebuffer()->refresh(0, 0, _win_w, _win_h);
+			_gui.framebuffer()->refresh(0, 0, _win_w, _win_h);
 	}
 
 	Main(Env &env) : _env(env)
@@ -503,7 +501,7 @@ struct Nitlog::Main
 		_timer.sigh(_timer_handler);
 		_timer.trigger_periodic(20*1000);
 
-		_nitpicker.input()->sigh(_input_handler);
+		_gui.input()->sigh(_input_handler);
 	}
 };
 

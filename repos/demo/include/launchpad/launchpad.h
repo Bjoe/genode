@@ -22,7 +22,6 @@
 #include <util/xml_node.h>
 #include <base/allocator.h>
 #include <base/service.h>
-#include <base/lock.h>
 #include <base/child.h>
 #include <timer_session/timer_session.h>
 #include <pd_session/client.h>
@@ -154,12 +153,13 @@ class Launchpad_child : public  Genode::Child_policy,
 
 		Genode::Child_policy::Route
 		resolve_session_request(Genode::Service::Name const &service_name,
-		                        Genode::Session_label const &label) override
+		                        Genode::Session_label const &label,
+		                        Genode::Session::Diag const  diag) override
 		{
 			auto route = [&] (Genode::Service &service) {
 				return Genode::Child_policy::Route { .service = service,
 				                                     .label   = label,
-				                                     .diag    = Genode::Session::Diag() }; };
+				                                     .diag    = diag }; };
 
 			Genode::Service *service = nullptr;
 
@@ -229,8 +229,8 @@ class Launchpad
 		Launchpad_child::Parent_services _parent_services { };
 		Launchpad_child::Child_services  _child_services  { };
 
-		Genode::Lock                  _children_lock { };
-		Genode::List<Launchpad_child> _children      { };
+		Genode::Mutex                 _children_mutex { };
+		Genode::List<Launchpad_child> _children       { };
 
 		bool _child_name_exists(Launchpad_child::Name const &);
 

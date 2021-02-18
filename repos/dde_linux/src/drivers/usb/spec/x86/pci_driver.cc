@@ -14,7 +14,6 @@
 /* Genode includes */
 #include <base/allocator.h>
 #include <base/entrypoint.h>
-#include <base/lock.h>
 #include <base/signal.h>
 #include <util/misc_math.h>
 
@@ -187,7 +186,7 @@ int request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags,
 {
 	for (Lx::Pci_dev *pci_dev =  Lx::pci_dev_registry()->first(); pci_dev; pci_dev = pci_dev->next())
 		if (pci_dev->irq == irq) {
-			Lx::Irq::irq().request_irq(pci_dev->client(), irq, handler, dev);
+			Lx::Irq::irq().request_irq(pci_dev->client().irq(0), irq, handler, dev);
 			return 0;
 		}
 

@@ -15,11 +15,11 @@ if { [have_include "power_on/qemu"] || ![have_spec nova] || ![have_spec x86_64]}
 
 set build_components {
 	drivers/framebuffer
-	drivers/input
+	drivers/ps2
 	drivers/usb
 	server/log_terminal
 	server/fs_rom
-	server/ram_fs
+	server/vfs lib/vfs/import
 	server/report_rom
 	app/usb_report_filter
 	virtualbox5
@@ -38,7 +38,8 @@ create_boot_directory
 
 import_from_depot [depot_user]/src/[base_src] \
                   [depot_user]/src/init \
-                  [depot_user]/src/nitpicker
+                  [depot_user]/src/nitpicker \
+                  [depot_user]/src/vfs_pipe
 
 
 set config {
@@ -69,30 +70,33 @@ append config {
 
 	<start name="ps2_drv" priority="-1">
 		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Input"/></provides>
+		<config/>
 	</start>
 
 	<start name="usb_config_fs" priority="-1">
-		<binary name="ram_fs"/>
+		<binary name="vfs"/>
 		<resource name="RAM" quantum="1M"/>
 		<provides><service name="File_system"/></provides>
 		<config verbose="yes">
-			<content>
-				<inline name="usb_drv.config">
+			<vfs>
+				<ram/>
+				<import>
+					<inline name="usb_drv.config">
 <config uhci="yes" ehci="yes" xhci="yes">
 	<raw>
 		<report devices="yes"/>
 	</raw>
 </config>
-				</inline>
-				<inline name="usb_report_filter.config">
+					</inline>
+					<inline name="usb_report_filter.config">
 <config>
 	<!-- USB device whitelist -->
 	<client label="virtualbox"/>
 	<device vendor_id="0x03eb" product_id="0x204d"/> <!-- 'Pro Micro' test device -->
 </config>
-				</inline>
-			</content>
+					</inline>
+				</import>
+			</vfs>
 			<policy label_prefix="usb_report_filter" root="/" writeable="yes" />
 			<policy label_prefix="usb_config_rom" root="/"/>
 		</config>
@@ -110,11 +114,10 @@ append config {
 
 	<start name="usb_report_filter" priority="-1">
 		<resource name="RAM" quantum="1200K"/>
-		<configfile name="usb_report_filter.config"/>
 		<route>
 			<service name="Report"><child name="report_rom" /></service>
-			<service name="ROM" label="usb_report_filter.config">
-				<child name="usb_config_rom"/>
+			<service name="ROM" label="config">
+				<child name="usb_config_rom" label="usb_report_filter.config"/>
 			</service>
 			<service name="ROM" label="devices">
 				<child name="report_rom"/>
@@ -131,31 +134,33 @@ append config {
 
 	<start name="usb_drv" priority="-1">
 		<resource name="RAM" quantum="16M"/>
-		<provides><service name="Usb"/></provides>
-		<configfile name="usb_drv.config"/>
+		<provides> <service name="Usb"/> </provides>
 		<route>
 			<service name="IRQ"><child name="acpi_drv" /></service>
 			<service name="Report"> <child name="report_rom" /> </service>
-			<service name="ROM" label="usb_drv.config"><child name="usb_config_rom"/></service>
+			<service name="ROM" label="config">
+				<child name="usb_config_rom" label="usb_drv.config"/> </service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
 
 	<start name="fb_drv" priority="-1">
 		<binary name="vesa_fb_drv"/>
-		<resource name="RAM" quantum="4M"/>
-		<provides><service name="Framebuffer"/></provides>
+		<resource name="RAM" quantum="16M"/>
+		<config/>
 	</start>
 
 	<start name="nitpicker" priority="-1">
 		<resource name="RAM" quantum="12M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<route>
-			<service name="Framebuffer"> <child name="fb_drv" /> </service>
 			<service name="Report"> <child name="report_rom" /> </service>
 			<any-service> <parent/> <any-child /> </any-service>
 		</route>
 		<config>
+			<capture/> <event/>
 			<report focus="yes" hover="yes" />
 
 			<domain name="pointer"  layer="1" content="client" label="no" origin="pointer" />
@@ -173,7 +178,7 @@ append config {
 		<provides> <service name="Report"/> </provides>
 		<config shapes="yes"/>
 		<route>
-			<service name="Nitpicker"> <child name="nitpicker"/>  </service>
+			<service name="Gui"> <child name="nitpicker"/> </service>
 			<service name="ROM" label="hover"> <child name="report_rom"/> </service>
 			<service name="ROM" label="xray"> <child name="report_rom"/> </service>
 			<any-service> <parent/> </any-service>
@@ -205,10 +210,11 @@ append config {
 		<config vbox_file="vm_genode_usb_hid.vbox" vm_name="TestVM" xhci="yes">
 			<vfs>
 				<dir name="dev"> <log/> <terminal/> </dir>
+				<dir name="pipe"> <pipe/> </dir>
 				<rom name="vm_genode_usb_hid.vbox" />
 				<rom name="usb_hid.iso" />
 			</vfs>
-			<libc stdout="/dev/log" stderr="/dev/log"/>
+			<libc stdout="/dev/log" stderr="/dev/log" pipe="/pipe"/>
 		</config>
 		<route>
 			<service name="Report"><child name="report_rom" /></service>
@@ -231,6 +237,7 @@ exec -ignorestderr \
      --genode-dir [genode_dir] \
      --name usb_hid \
      --specs "$specs" \
+     --board "$board_var" \
      --repositories "$repositories" \
      --cross-dev-prefix "[cross_dev_prefix]" \
      --include boot_dir/nova \
@@ -250,12 +257,12 @@ set boot_modules {
 	usb_drv
 	usb_report_filter
 	fs_rom
-	ram_fs
+	vfs vfs.lib.so vfs_import.lib.so
 	report_rom
 	virtualbox5-nova
 	usb_hid.iso
 	vm_genode_usb_hid.vbox
-	ld.lib.so libc.lib.so vfs.lib.so libm.lib.so libc_pipe.lib.so
+	ld.lib.so libc.lib.so libm.lib.so
 	libiconv.lib.so stdcxx.lib.so
 	qemu-usb.lib.so
 }
@@ -268,12 +275,12 @@ if { ![get_cmd_switch --autopilot] } { run_genode_until forever }
 
 # autopilot test
 
-run_genode_until {\[init -\> log_terminal\] \[init -\> test-input\] Input event #0\t} 90
+run_genode_until {\[init -\> log_terminal\] \[init -\> event_dump\] Input event #0\t} 90
 
 # remove everything before the first interesting line
-regexp {(\[init -\> log_terminal\] \[init -\> test-input\] Input event #0\t.*)} $output all output
+regexp {(\[init -\> log_terminal\] \[init -\> event_dump\] Input event #0\t.*)} $output all output
 
-run_genode_until {.*\[init -\> test-input\] Input event #11.*\n} 60 [output_spawn_id]
+run_genode_until {.*\[init -\> event_dump\] Input event #11.*\n} 60 [output_spawn_id]
 
 unify_output { number [0-9]+} ""
 unify_output {(?n)on usb-dummy.*$} ""
@@ -288,12 +295,12 @@ filter_out_color_escape_sequences
 trim_lines
 
 compare_output_to {
-[init -> log_terminal] [init -> test-input] Input event #0	PRESS KEY_X 65534	key count: 1
-[init -> log_terminal] [init -> test-input] Input event #1	RELEASE KEY_X	key count: 0
-[init -> log_terminal] [init -> test-input] Input event #2	PRESS BTN_LEFT 65534	key count: 1
-[init -> log_terminal] [init -> test-input] Input event #3	REL_MOTION -1+0	key count: 1
-[init -> log_terminal] [init -> test-input] Input event #4	REL_MOTION +0+1	key count: 1
-[init -> log_terminal] [init -> test-input] Input event #5	RELEASE BTN_LEFT	key count: 0
+[init -> log_terminal] [init -> event_dump] Input event #0	PRESS KEY_X 65534	key count: 1
+[init -> log_terminal] [init -> event_dump] Input event #1	RELEASE KEY_X	key count: 0
+[init -> log_terminal] [init -> event_dump] Input event #2	PRESS BTN_LEFT 65534	key count: 1
+[init -> log_terminal] [init -> event_dump] Input event #3	REL_MOTION -1+0	key count: 1
+[init -> log_terminal] [init -> event_dump] Input event #4	REL_MOTION +0+1	key count: 1
+[init -> log_terminal] [init -> event_dump] Input event #5	RELEASE BTN_LEFT	key count: 0
 [init -> usb_drv] dev_info: USB disconnect, device
 [init -> log_terminal] [init -> usb_drv] dev_info: USB disconnect, device
 [init -> usb_drv] dev_info: new full-speed USB device
@@ -303,10 +310,10 @@ compare_output_to {
 [init -> log_terminal] [init -> usb_drv] dev_info: input: USB HID v1.11 Keyboard [D L]
 [init -> log_terminal] [init -> usb_drv] dev_info: D L
 [init -> log_terminal] [init -> usb_drv] dev_info: input: USB HID v1.11 Mouse [D L]
-[init -> log_terminal] [init -> test-input] Input event #6	PRESS KEY_X 65534	key count: 1
-[init -> log_terminal] [init -> test-input] Input event #7	RELEASE KEY_X	key count: 0
-[init -> log_terminal] [init -> test-input] Input event #8	PRESS BTN_LEFT 65534	key count: 1
-[init -> log_terminal] [init -> test-input] Input event #9	REL_MOTION -1+0	key count: 1
-[init -> log_terminal] [init -> test-input] Input event #10	REL_MOTION +0+1	key count: 1
-[init -> log_terminal] [init -> test-input] Input event #11	RELEASE BTN_LEFT	key count: 0
+[init -> log_terminal] [init -> event_dump] Input event #6	PRESS KEY_X 65534	key count: 1
+[init -> log_terminal] [init -> event_dump] Input event #7	RELEASE KEY_X	key count: 0
+[init -> log_terminal] [init -> event_dump] Input event #8	PRESS BTN_LEFT 65534	key count: 1
+[init -> log_terminal] [init -> event_dump] Input event #9	REL_MOTION -1+0	key count: 1
+[init -> log_terminal] [init -> event_dump] Input event #10	REL_MOTION +0+1	key count: 1
+[init -> log_terminal] [init -> event_dump] Input event #11	RELEASE BTN_LEFT	key count: 0
 }

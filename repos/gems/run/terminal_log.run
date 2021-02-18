@@ -4,7 +4,6 @@ import_from_depot [depot_user]/src/[base_src] \
                   [depot_user]/pkg/[drivers_interactive_pkg] \
                   [depot_user]/pkg/terminal \
                   [depot_user]/src/nitpicker \
-                  [depot_user]/src/nit_fb \
                   [depot_user]/src/demo \
                   [depot_user]/src/init
 
@@ -21,7 +20,7 @@ install_config {
 		<service name="LOG"/>
 	</parent-provides>
 	<default-route>
-		<service name="Nitpicker"> <child name="nitpicker"/> </service>
+		<service name="Gui"> <child name="nitpicker"/> </service>
 		<service name="Timer">     <child name="timer"/> </service>
 		<service name="Terminal">  <child name="terminal"/> </service>
 		<service name="Platform">  <child name="platform_drv"/> </service>
@@ -35,56 +34,43 @@ install_config {
 		<provides><service name="Timer"/></provides>
 	</start>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
-		<provides>
-			<service name="Input"/> <service name="Framebuffer"/>
-		</provides>
 	</start>
 
 	<start name="nitpicker">
 		<resource name="RAM" quantum="2M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<config>
+			<capture/> <event/>
 			<domain name="pointer" layer="1" content="client" label="no" origin="pointer" />
 			<domain name="default" layer="2" content="client" label="no" focus="click" hover="always" />
 			<policy label_prefix="pointer" domain="pointer"/>
 			<default-policy domain="default"/>
 		</config>
-		<route>
-			<service name="Input">       <child name="drivers"/> </service>
-			<service name="Framebuffer"> <child name="drivers"/> </service>
-			<any-service> <parent/> <any-child/> </any-service>
-		</route>
+		<route> <any-service> <parent/> <any-child/> </any-service> </route>
 	</start>
 
 	<start name="pointer">
 		<resource name="RAM" quantum="2M"/>
 	</start>
 
-	<start name="terminal_fb">
-		<binary name="nit_fb"/>
-		<resource name="RAM" quantum="4M"/>
-		<provides>
-			<service name="Framebuffer"/>
-			<service name="Input"/>
-		</provides>
-		<config xpos="0" ypos="0" width="640" height="480" refresh_rate="25"/>
-	</start>
-
 	<start name="terminal" caps="110">
-		<resource name="RAM" quantum="3M"/>
+		<resource name="RAM" quantum="6M"/>
 		<provides><service name="Terminal"/></provides>
 		<route>
 			<service name="ROM" label="config"> <parent label="terminal.config"/> </service>
-			<service name="Input">       <child name="terminal_fb"/> </service>
-			<service name="Framebuffer"> <child name="terminal_fb"/> </service>
+			<service name="Gui"> <child name="nitpicker"/> </service>
 			<any-service> <parent/> <any-child/></any-service>
 		</route>
 	</start>

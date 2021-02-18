@@ -39,6 +39,15 @@
 ## Define global configuration variables
 ##
 
+#
+# Whenever using the 'run/%' rule and the run tool spawns this Makefile again
+# when encountering a 'build' step, the build.conf is included a second time,
+# with the content taken from the environment variable. We need to reset the
+# 'REPOSITORIES' variable to prevent extending this variable twice.
+# (see https://github.com/genodelabs/genode/issues/3731)
+#
+REPOSITORIES :=
+
 -include etc/build.conf
 
 BUILD_BASE_DIR := $(CURDIR)
@@ -80,9 +89,6 @@ export SHELL := $(shell which bash)
 # Fetch SPECS configuration from all source repositories and the build directory
 #
 SPECS :=
-ifneq ($(BOARD),)
-SPECS += $(BOARD)
-endif
 -include $(foreach REP,$(REPOSITORIES),$(wildcard $(REP)/etc/specs.conf))
 -include $(BUILD_BASE_DIR)/etc/specs.conf
 

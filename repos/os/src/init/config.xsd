@@ -126,6 +126,12 @@
      </xs:complexType>
     </xs:element> <!-- "report" -->
 
+    <xs:element name="heartbeat">
+     <xs:complexType>
+      <xs:attribute name="rate_ms" type="xs:int" />
+     </xs:complexType>
+    </xs:element> <!-- "heartbeat" -->
+
     <xs:element name="resource">
      <xs:complexType>
       <xs:attribute name="name"     type="xs:string" />
@@ -143,6 +149,8 @@
         </xs:complexType>
        </xs:element> <!-- "binary" -->
 
+       <xs:element name="heartbeat" />
+
        <xs:element name="affinity">
         <xs:complexType>
          <xs:attribute name="xpos"   type="xs:int" />
@@ -156,15 +164,14 @@
         <xs:complexType>
          <xs:attribute name="name"           type="xs:string" />
          <xs:attribute name="quantum"        type="Number_of_bytes" />
-         <xs:attribute name="constrain_phys" type="Boolean" />
         </xs:complexType>
        </xs:element> <!-- "resource" -->
 
-       <xs:element name="configfile">
+       <xs:element name="exit">
         <xs:complexType>
-         <xs:attribute name="name" type="xs:string" />
+         <xs:attribute name="propagate" type="Boolean" />
         </xs:complexType>
-       </xs:element> <!-- "configfile" -->
+       </xs:element> <!-- "exit" -->
 
        <xs:element name="provides">
         <xs:complexType>
@@ -190,10 +197,11 @@
        </xs:element> <!-- "config" -->
 
       </xs:choice>
-      <xs:attribute name="name"     type="xs:string" />
-      <xs:attribute name="ld"       type="Boolean" />
-      <xs:attribute name="caps"     type="xs:int" />
-      <xs:attribute name="priority" type="xs:int" />
+      <xs:attribute name="name"            type="xs:string" />
+      <xs:attribute name="ld"              type="Boolean" />
+      <xs:attribute name="caps"            type="xs:int" />
+      <xs:attribute name="priority"        type="xs:int" />
+      <xs:attribute name="managing_system" type="Boolean" />
      </xs:complexType>
     </xs:element> <!-- "start" -->
 

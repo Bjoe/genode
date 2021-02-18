@@ -42,8 +42,6 @@
 static char c_vbox_file[128];
 static char c_vbox_vmname[128];
 
-extern "C" void init_libc_vbox_logger(void);
-
 
 /**
  * xpcom style memory allocation
@@ -169,7 +167,7 @@ HRESULT setupmachine(Genode::Env &env)
 
 	for (unsigned uScreenId = 0; uScreenId < cMonitors; uScreenId++)
 	{
-		Genodefb *fb = new Genodefb(env, genodeConsole->nitpicker());
+		Genodefb *fb = new Genodefb(env, genodeConsole->gui(), display);
 		HRESULT rc = display->AttachFramebuffer(uScreenId, fb, gaFramebufferId[uScreenId].asOutParam());
 		if (FAILED(rc))
 			return rc;
@@ -262,22 +260,26 @@ void Libc::Component::construct(Libc::Env &env)
 	/* make Genode environment accessible via the global 'genode_env()' */
 	genode_env_ptr = &env;
 
-	try {
+	{
 		using namespace Genode;
 
-		Attached_rom_dataspace config(env, "config");
-		Xml_node::Attribute vbox_file = config.xml().attribute("vbox_file");
-		vbox_file.value(c_vbox_file, sizeof(c_vbox_file));
-		Xml_node::Attribute vm_name = config.xml().attribute("vm_name");
-		vm_name.value(c_vbox_vmname, sizeof(c_vbox_vmname));
-	} catch (...) {
-		Genode::error("missing attributes in configuration, minimum requirements: ");
-		Genode::error("  <config vbox_file=\"...\" vm_name=\"...\">" );
-		throw;
-	}
+		Attached_rom_dataspace config_ds(env, "config");
+		Xml_node const config = config_ds.xml();
 
-	/* enable stdout/stderr for VBox Log infrastructure */
-	init_libc_vbox_logger();
+		if (!config.has_attribute("vbox_file") || !config.has_attribute("vm_name")) {
+			error("missing attributes in configuration, minimum requirements: ");
+			error("  <config vbox_file=\"...\" vm_name=\"...\">" );
+			throw Exception();
+		}
+
+		typedef String<128> Name;
+
+		Name const vbox_file = config.attribute_value("vbox_file", Name());
+		copy_cstring(c_vbox_file, vbox_file.string(), sizeof(c_vbox_file));
+
+		Name const vm_name = config.attribute_value("vm_name", Name());
+		copy_cstring(c_vbox_vmname, vm_name.string(), sizeof(c_vbox_vmname));
+	}
 
 	Libc::with_libc([&] () {
 		static char  argv0[] = { '_', 'm', 'a', 'i', 'n', 0};

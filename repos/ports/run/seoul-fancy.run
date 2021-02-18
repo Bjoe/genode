@@ -15,8 +15,11 @@ set use_genode_iso    0
 set use_model_ahci    0
 set use_model_ide     0
 
+set use_block_vdi     0
 set use_block_ram     0
 set use_block_sata    0
+
+set use_part_block    0
 
 set use_nic_session   1
 set use_nic_bridge    1
@@ -34,7 +37,7 @@ set vcpus_to_be_used  1
 
 set multiboot_files {
 		<rom name="munich"/>
-		<rom name="bzImage-3.1" cmdline="root=/dev/ram0 earlyprintk=ttyS0 vga=0x314"/>
+		<rom name="bzImage-3.1" cmdline="root=/dev/ram0 earlyprintk=ttyS0 vga=0x338"/>
 		<rom name="tc-browser.gz"/>
 }
 
@@ -59,6 +62,6 @@ source ${genode_dir}/repos/ports/run/seoul.inc
 
 append qemu_args " -m 1024 "
 append qemu_args " -cpu phenom "
-append qemu_args " -net nic,model=e1000 "
+append_qemu_nic_args
 
 run_genode_until forever

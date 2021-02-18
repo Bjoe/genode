@@ -86,13 +86,12 @@
 #
 
 assert_spec hw
-assert_spec imx53
-assert_spec trustzone
+assert_spec imx53_qsb_tz
 
 # determine platform specific configuration
-set trusted_led       [have_spec usb_armory]
-set inversepath_linux [have_spec usb_armory]
-set freescale_linux   [have_spec imx53_qsb]
+set trusted_led       [have_board usb_armory]
+set inversepath_linux [have_board usb_armory]
+set freescale_linux   [have_board imx53_qsb_tz]
 set initrd_rootfs     $freescale_linux
 set mmc_rootfs        $inversepath_linux
 set dtb               $inversepath_linux
@@ -100,20 +99,20 @@ set dtb               $inversepath_linux
 set targets { core init server/tz_vmm }
 
 proc tz_vmm_binary {} {
-	if {[have_spec usb_armory]} { return usb_armory_tz_vmm }
-	if {[have_spec imx53_qsb]}  { return imx53_qsb_tz_vmm }
+	if {[have_board usb_armory]} { return usb_armory_tz_vmm }
+	if {[have_board imx53_qsb]}  { return imx53_qsb_tz_vmm }
 	return no_tz_vmm_binary
 }
 
 if { $mmc_rootfs } {
 
 	# choose interrupt for paravirtualized block
-	if { [have_spec imx53] } { set tz_vmm_block_irq 92 }
+	if { [have_board imx53_qsb_tz] } { set tz_vmm_block_irq 92 }
 
 	# add targets that enable MMC access via paravirtualized block
 	lappend targets timer
 	lappend targets drivers/platform
-	lappend targets drivers/sd_card
+	lappend targets drivers/sd_card/imx53
 	lappend targets server/part_block
 }
 
@@ -143,10 +142,32 @@ set config {
 	<default caps="100"/>}
 
 append_if $trusted_led config {
-	<start name="imx53_gpio_drv">
+	<start name="platform_drv" caps="150">
+		<resource name="RAM" quantum="1M"/>
+		<provides> <service name="Platform"/> </provides>
+		<config>
+			<device name="gpio">
+				<io_mem address="0x53f90000" size="0x4000"/>
+				<irq number="56"/>
+				<irq number="57"/>
+			</device>
+			<device name="sd_card">
+				<io_mem address="0x50004000" size="0x4000"/>
+				<irq    number="1"/>
+			</device>
+			<policy label="imx_gpio_drv -> "> <device name="gpio"/> </policy>
+			<policy label="sd_card_drv -> "> <device name="sd_card"/> </policy>
+		</config>
+	</start>
+
+	<start name="imx_gpio_drv">
 		<resource name="RAM" quantum="3M"/>
 		<provides><service name="Gpio"/></provides>
 		<config/>
+		<route>
+			<service name="Platform"><child name="platform_drv" /></service>
+			<any-service><parent/><any-child/></any-service>
+		</route>
 	</start>}
 
 append_if $mmc_rootfs config {
@@ -154,16 +175,14 @@ append_if $mmc_rootfs config {
 		<resource name="RAM" quantum="3M"/>
 		<provides><service name="Timer"/></provides>
 	</start>
-	<start name="imx53_platform_drv">
-		<resource name="RAM" quantum="3M"/>
-		<provides>
-			<service name="Regulator"/>
-			<service name="Platform"/>
-		</provides>
-	</start>
-	<start name="imx53_sd_card_drv">
+	<start name="sd_card_drv">
+		<binary name="imx53_sd_card_drv"/>
 		<resource name="RAM" quantum="3M"/>
 		<provides><service name="Block"/></provides>
+		<route>
+			<service name="Platform"> <child name="platform_drv"/> </service>
+			<any-service><parent/><any-child/></any-service>
+		</route>
 	</start>
 	<start name="part_block">
 		<resource name="RAM" quantum="10M" />
@@ -236,7 +255,6 @@ if { $mmc_rootfs } {
 
 	# add components that enable MMC access via parvirtualized block
 	lappend boot_modules timer
-	lappend boot_modules imx53_platform_drv
 	lappend boot_modules imx53_sd_card_drv
 	lappend boot_modules part_block
 
@@ -266,7 +284,8 @@ if { $mmc_rootfs } {
 }
 cd ..
 
-lappend_if $trusted_led boot_modules imx53_gpio_drv
+lappend_if $trusted_led boot_modules imx_gpio_drv
+lappend_if $trusted_led boot_modules platform_drv
 
 build_boot_image [join $boot_modules " "]
 

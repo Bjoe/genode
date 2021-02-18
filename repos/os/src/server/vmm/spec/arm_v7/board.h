@@ -1,80 +1,53 @@
 /*
- * \brief  Driver for the Versatile Express A9X4 board
- * \author Martin stein
- * \date   2011-11-03
+ * \brief  VMM address space utility
+ * \author Stefan Kalkowski
+ * \date   2019-11-13
  */
 
 /*
- * Copyright (C) 2011-2017 Genode Labs GmbH
+ * Copyright (C) 2019 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
  * under the terms of the GNU Affero General Public License version 3.
  */
 
-#ifndef _INCLUDE__PLATFORM__VEA9X4__DRIVERS__BOARD_BASE_H_
-#define _INCLUDE__PLATFORM__VEA9X4__DRIVERS__BOARD_BASE_H_
+#ifndef _SRC__SERVER__VMM__BOARD_H_
+#define _SRC__SERVER__VMM__BOARD_H_
 
-namespace Vea9x4 { struct Board; }
+namespace Vmm {
 
+	enum {
+		SIZE_1_MB                 = 1024 * 1024,
+		KERNEL_OFFSET             = 54 * SIZE_1_MB,
+		DTB_OFFSET                = 64 * SIZE_1_MB,
+		INITRD_OFFSET             = 96 * SIZE_1_MB,
 
-/**
- * Driver for the Versatile Express A9X4 board
- *
- * Implies the uATX motherboard and the CoreTile Express A9X4 daughterboard
- */
-struct Vea9x4::Board
-{
-	enum
-	{
-		/* MMIO */
-		MMIO_0_BASE = 0x10000000,
-		MMIO_0_SIZE = 0x10000000,
-		MMIO_1_BASE = 0x4C000000,
-		MMIO_1_SIZE = 0x04000000,
+		GIC_VERSION               = 2,
+		GICD_MMIO_START           = 0x8000000,
+		GICD_MMIO_SIZE            = 0x10000,
+		GICC_MMIO_START           = 0x8010000,
+		GICR_MMIO_START           = 0x80a0000,
+		GICR_MMIO_SIZE            = 0xf60000,
 
-		/* RAM */
-		RAM_0_BASE = 0x60000000,
-		RAM_0_SIZE = 0x20000000,
-		RAM_1_BASE = 0x84000000,
-		RAM_1_SIZE = 0x1c000000,
-		RAM_2_BASE = 0x48000000,
-		RAM_2_SIZE = 0x02000000,
+		PL011_MMIO_START          = 0x9000000,
+		PL011_MMIO_SIZE           = 0x1000,
+		PL011_IRQ                 = 33,
 
-		/* UART */
-		PL011_0_MMIO_BASE = MMIO_0_BASE + 0x9000,
-		PL011_0_MMIO_SIZE = 0x1000,
-		PL011_0_CLOCK = 24*1000*1000,
-		PL011_0_IRQ = 37,
-		PL011_1_IRQ = 38,
-		PL011_2_IRQ = 39,
-		PL011_3_IRQ = 40,
+		VIRTIO_CONSOLE_MMIO_START = 0xa000000,
+		VIRTIO_CONSOLE_MMIO_SIZE  = 0x200,
+		VIRTIO_CONSOLE_IRQ        = 48,
 
-		/* timer/counter */
-		SP804_0_1_MMIO_BASE = MMIO_0_BASE + 0x11000,
-		SP804_0_1_MMIO_SIZE = 0x1000,
-		SP804_0_1_CLOCK = 1000*1000,
-		SP804_0_1_IRQ = 34,
+		VIRTIO_NET_MMIO_START     = 0xa000200,
+		VIRTIO_NET_MMIO_SIZE      = 0x200,
+		VIRTIO_NET_IRQ            = 49,
 
-		/* PS2 */
-		KMI_0_IRQ = 44,
-		KMI_1_IRQ = 45,
+		RAM_START                 = 0x40000000,
+		RAM_SIZE                  = 128 * 1024 *1024,
 
-		/* LAN */
-		LAN9118_IRQ = 47,
+		VTIMER_IRQ                = 27,
 
-		/* card reader */
-		PL180_0_IRQ = 9,
-		PL180_1_IRQ = 10,
-
-		/* CPU */
-		CORTEX_A9_PRIVATE_MEM_BASE  = 0x1e000000,
-		CORTEX_A9_PRIVATE_MEM_SIZE  = 0x2000,
-		CORTEX_A9_PRIVATE_TIMER_CLK = 200010000,
-
-		/* CPU cache */
-		CACHE_LINE_SIZE_LOG2 = 2, /* FIXME get correct value from board spec */
+		MAX_CPUS                  = 1,
 	};
-};
+}
 
-#endif /* _INCLUDE__PLATFORM__VEA9X4__DRIVERS__BOARD_BASE_H_ */
-
+#endif /* _SRC__SERVER__VMM__BOARD_H_ */

@@ -25,13 +25,8 @@
 /* base-internal includes */
 #include <base/internal/capability_space_tpl.h>
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/types.h>
-#include <l4/sys/syscalls.h>
-#include <l4/sys/utcb.h>
-#include <l4/sys/kdebug.h>
-}
+/* L4/Fiasco includes */
+#include <fiasco/syscall.h>
 
 using namespace Genode;
 using namespace Fiasco;
@@ -139,17 +134,6 @@ Thread_state Platform_thread::state()
 	s.sp = sp;
 
 	return s;
-}
-
-
-void Platform_thread::cancel_blocking()
-{
-	l4_umword_t   dummy;
-	l4_threadid_t invalid = L4_INVALID_ID;
-
-	l4_inter_task_ex_regs(_l4_thread_id, ~0UL, ~0UL,
-	                      &invalid, &invalid, &invalid,
-	                      &dummy, &dummy, &dummy, 0, l4_utcb_get());
 }
 
 

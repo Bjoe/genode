@@ -19,7 +19,7 @@
 #include <os/reporter.h>
 
 /* local includes */
-#include <component.h>
+#include <driver.h>
 
 /* DRM-specific includes */
 #include <lx_emul.h>
@@ -100,7 +100,7 @@ Framebuffer::Driver::_preferred_mode(drm_connector *connector,
 
 	/* try to read configuration for connector */
 	try {
-		Xml_node config = _session.config();
+		Xml_node config = _config.xml();
 		Xml_node xn = config.sub_node();
 		for (unsigned i = 0; i < config.num_sub_nodes(); xn = xn.next()) {
 			if (!xn.has_type("connector"))
@@ -157,7 +157,7 @@ void Framebuffer::Driver::finish_initialization()
 	lx_c_set_driver(lx_drm_device, (void*)this);
 
 	generate_report();
-	_session.config_changed();
+	Driver::config_changed();
 }
 
 
@@ -166,7 +166,7 @@ void Framebuffer::Driver::finish_initialization()
 void Framebuffer::Driver::_poll()
 {
 	Lx::Pci_dev * pci_dev = (Lx::Pci_dev*) lx_drm_device->pdev->bus;
-	Lx::Irq::irq().inject_irq(pci_dev->client());
+	Lx::Irq::irq().inject_irq(pci_dev->irq);
 }
 
 
@@ -189,20 +189,20 @@ void Framebuffer::Driver::update_mode()
 {
 	using namespace Genode;
 
-	Configuration old = _config;
-	_config = Configuration();
+	Configuration old = _lx_config;
+	_lx_config = Configuration();
 
 	lx_for_each_connector(lx_drm_device, [&] (drm_connector *c) {
 		unsigned brightness;
 		drm_display_mode * mode = _preferred_mode(c, brightness);
 		if (!mode) return;
-		if (mode->hdisplay > _config._lx.width)  _config._lx.width  = mode->hdisplay;
-		if (mode->vdisplay > _config._lx.height) _config._lx.height = mode->vdisplay;
+		if (mode->hdisplay > _lx_config._lx.width)  _lx_config._lx.width  = mode->hdisplay;
+		if (mode->vdisplay > _lx_config._lx.height) _lx_config._lx.height = mode->vdisplay;
 	});
 
-	lx_c_allocate_framebuffer(lx_drm_device, &_config._lx);
+	lx_c_allocate_framebuffer(lx_drm_device, &_lx_config._lx);
 
-	if (!_config._lx.lx_fb) {
+	if (!_lx_config._lx.lx_fb) {
 		Genode::error("updating framebuffer failed");
 		return;
 	}
@@ -213,7 +213,7 @@ void Framebuffer::Driver::update_mode()
 			unsigned brightness = MAX_BRIGHTNESS + 1;
 
 			/* set mode */
-			lx_c_set_mode(lx_drm_device, c, _config._lx.lx_fb,
+			lx_c_set_mode(lx_drm_device, c, _lx_config._lx.lx_fb,
 			              _preferred_mode(c, brightness));
 
 			/* set sane brightness, ignore unsane values and let as is */
@@ -223,10 +223,10 @@ void Framebuffer::Driver::update_mode()
 	}
 
 	/* force virtual framebuffer size if requested */
-	if (int w = _session.force_width_from_config())
-		_config._lx.width = min(_config._lx.width, w);
-	if (int h = _session.force_height_from_config())
-		_config._lx.height = min(_config._lx.height, h);
+	if (int w = _force_width_from_config())
+		_lx_config._lx.width = min(_lx_config._lx.width, w);
+	if (int h = _force_height_from_config())
+		_lx_config._lx.height = min(_lx_config._lx.height, h);
 
 	if (old._lx.addr)  Lx::iounmap(old._lx.addr);
 	if (old._lx.lx_fb) {
@@ -268,7 +268,7 @@ void Framebuffer::Driver::generate_report()
 
 	/* check for report configuration option */
 	try {
-		_reporter.enabled(_session.config().sub_node("report")
+		_reporter.enabled(_config.xml().sub_node("report")
 		                 .attribute_value(_reporter.name().string(), false));
 	} catch (...) {
 		_reporter.enabled(false);
@@ -343,7 +343,8 @@ char *strcpy(char *to, const char *from)
 
 char *strncpy(char *dst, const char* src, size_t n)
 {
-	return Genode::strncpy(dst, src, n);
+	Genode::copy_cstring(dst, src, n);
+	return dst;
 }
 
 int strncmp(const char *cs, const char *ct, size_t count)
@@ -1094,7 +1095,7 @@ int request_irq(unsigned int irq, irq_handler_t handler, unsigned long flags,
 {
 	struct drm_device * drm_dev = (struct drm_device*) dev;
 	Lx::Pci_dev * pci_dev = (Lx::Pci_dev*) drm_dev->pdev->bus;
-	Lx::Irq::irq().request_irq(pci_dev->client(), irq, handler, dev);
+	Lx::Irq::irq().request_irq(pci_dev->client().irq(0), irq, handler, dev);
 	return 0;
 }
 

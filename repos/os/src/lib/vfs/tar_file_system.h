@@ -65,7 +65,7 @@ class Vfs::Tar_file_system : public File_system
 				 * large enough to host an additional zero.
 				 */
 				char buf[sizeof(field) + 1];
-				strncpy(buf, field, sizeof(buf));
+				copy_cstring(buf, field, sizeof(buf));
 
 				unsigned long value = 0;
 				Genode::ascii_to_unsigned(buf, value, 8);
@@ -394,7 +394,7 @@ class Vfs::Tar_file_system : public File_system
 				 * GNU tar does not null terminate names of length 100
 				 */
 				else {
-					strncpy(path_element, record->name(), 101);
+					copy_cstring(path_element, record->name(), 101);
 					current_path.import(path_element);
 				}
 
@@ -437,14 +437,14 @@ class Vfs::Tar_file_system : public File_system
 							 */
 							Genode::size_t name_size = strlen(path_element) + 1;
 							char *name = (char*)_alloc.alloc(name_size);
-							strncpy(name, path_element, name_size);
+							copy_cstring(name, path_element, name_size);
 							child_node = new (_alloc) Node(name, record);
 						} else {
 
 							/* create a directory node without record */
 							Genode::size_t name_size = strlen(path_element) + 1;
 							char *name = (char*)_alloc.alloc(name_size);
-							strncpy(name, path_element, name_size);
+							copy_cstring(name, path_element, name_size);
 							child_node = new (_alloc) Node(name, 0);
 						}
 						parent_node->insert(child_node);
@@ -492,7 +492,7 @@ class Vfs::Tar_file_system : public File_system
 
 	struct Num_dirent_cache
 	{
-		Lock             lock { };
+		Mutex            mutex { };
 		Node            &root_node;
 		bool             valid;              /* true after first lookup */
 		char             key[256];           /* key used for lookup */
@@ -503,14 +503,14 @@ class Vfs::Tar_file_system : public File_system
 
 		file_size num_dirent(char const *path)
 		{
-			Lock::Guard guard(lock);
+			Mutex::Guard guard(mutex);
 
 			/* check for cache miss */
 			if (!valid || strcmp(path, key) != 0) {
 				Node *node = root_node.lookup(path);
 				if (!node)
 					return 0;
-				strncpy(key, path, sizeof(key));
+				copy_cstring(key, path, sizeof(key));
 				cached_num_dirent = node->num_dirent();
 				valid = true;
 			}
@@ -610,8 +610,14 @@ class Vfs::Tar_file_system : public File_system
 				return STAT_ERR_NO_ENTRY;
 
 			if (!node_ptr->record) {
-				out.type = Node_type::DIRECTORY;
-				out.rwx  = Node_rwx::rx();
+				out = {
+					.size              = 0,
+					.type              = Node_type::DIRECTORY,
+					.rwx               = Node_rwx::rx(),
+					.inode             = (Genode::addr_t)node_ptr,
+					.device            = (Genode::addr_t)this,
+					.modification_time = { }
+				};
 				return STAT_OK;
 			}
 

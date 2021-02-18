@@ -36,10 +36,10 @@ extern int main_thread_futex_counter;
 static void empty_signal_handler(int) { }
 
 
-static Lock &startup_lock()
+static Blockade &startup_lock()
 {
-	static Lock lock(Lock::LOCKED);
-	return lock;
+	static Blockade blockade;
+	return blockade;
 }
 
 
@@ -75,7 +75,7 @@ void Thread::_thread_start()
 	}
 
 	/* wakeup 'start' function */
-	startup_lock().unlock();
+	startup_lock().wakeup();
 
 	thread->entry();
 
@@ -123,7 +123,10 @@ void Thread::_deinit_platform_thread()
 	for (;;) {
 
 		/* destroy thread locally */
-		int ret = lx_tgkill(native_thread().pid, native_thread().tid, LX_SIGCANCEL);
+		int pid = native_thread().pid;
+		if (pid == 0) break;
+
+		int ret = lx_tgkill(pid, native_thread().tid, LX_SIGCANCEL);
 
 		if (ret < 0) break;
 
@@ -140,8 +143,8 @@ void Thread::_deinit_platform_thread()
 void Thread::start()
 {
 	/* synchronize calls of the 'start' function */
-	static Lock lock;
-	Lock::Guard guard(lock);
+	static Mutex mutex;
+	Mutex::Guard guard(mutex);
 
 	_init_cpu_session_and_trace_control();
 
@@ -161,11 +164,5 @@ void Thread::start()
 	native_thread().pid = lx_getpid();
 
 	/* wait until the 'thread_start' function got entered */
-	startup_lock().lock();
-}
-
-
-void Thread::cancel_blocking()
-{
-	Cpu_thread_client(_thread_cap).cancel_blocking();
+	startup_lock().block();
 }

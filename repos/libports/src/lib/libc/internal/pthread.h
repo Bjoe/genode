@@ -17,6 +17,8 @@
 #define _LIBC__INTERNAL__PTHREAD_H_
 
 /* Genode includes */
+#include <base/blockade.h>
+#include <base/sleep.h>
 #include <libc/allocator.h>
 #include <libc/component.h>
 #include <util/reconstructible.h>
@@ -35,6 +37,7 @@ namespace Libc {
 	struct Pthread_registry;
 	struct Pthread_blockade;
 	struct Pthread_job;
+	struct Pthread_mutex;
 }
 
 
@@ -50,6 +53,9 @@ class Libc::Pthread_registry
 
 		Pthread *_array[MAX_NUM_PTHREADS] = { 0 };
 
+		/* thread to be destroyed on next 'cleanup()' call */
+		Pthread *_cleanup_thread { nullptr };
+
 	public:
 
 		void insert(Pthread &thread);
@@ -57,6 +63,9 @@ class Libc::Pthread_registry
 		void remove(Pthread &thread);
 
 		bool contains(Pthread &thread);
+
+		/* destroy '_cleanup_thread' and register another one if given */
+		void cleanup(Pthread *new_cleanup_thread = nullptr);
 };
 
 
@@ -67,8 +76,9 @@ extern "C" {
 
 	struct pthread_attr
 	{
-		void   *stack_addr { nullptr };
-		size_t  stack_size { Libc::Component::stack_size() };
+		void   *stack_addr   { nullptr };
+		size_t  stack_size   { Libc::Component::stack_size() };
+		int     detach_state { PTHREAD_CREATE_JOINABLE };
 	};
 
 	/*
@@ -159,22 +169,22 @@ struct Libc::Pthread : Noncopyable, Thread::Tls::Base
 		void _associate_thread_with_pthread()
 		{
 			Thread::Tls::Base::tls(_thread, *this);
+			pthread_registry().cleanup();
 			pthread_registry().insert(*this);
 		}
 
 		bool _exiting = false;
 
 		/*
-		 * The join lock is needed because 'Libc::resume_all()' uses a
-		 * 'Signal_transmitter' which holds a reference to a signal context
-		 * capability, which needs to be released before the thread can be
-		 * destroyed.
-		 *
-		 * Also, we cannot use 'Thread::join()', because it only
-		 * returns when the thread entry function returns, which does not
-		 * happen with 'pthread_cancel()'.
+		 * The mutex synchronizes the execution of cancel() and join() to
+		 * protect the about-to-exit pthread to be destructed before it leaves
+		 * trigger_monitor_examination(), which uses a 'Signal_transmitter'
+		 * and, therefore, holds a reference to a signal context capability
+		 * that needs to be released before the thread can be destroyed.
 		 */
-		Lock _join_lock { Lock::LOCKED };
+		Genode::Mutex _mutex { };
+
+		Genode::Blockade _detach_blockade;
 
 		/* return value for 'pthread_join()' */
 		void *_retval = PTHREAD_CANCELED;
@@ -188,10 +198,12 @@ struct Libc::Pthread : Noncopyable, Thread::Tls::Base
 		class Cleanup_handler : public List<Cleanup_handler>::Element
 		{
 			private:
+
 				void (*_routine)(void*);
 				void *_arg;
 
 			public:
+
 				Cleanup_handler(void (*routine)(void*), void *arg)
 				: _routine(routine), _arg(arg) { }
 
@@ -243,17 +255,29 @@ struct Libc::Pthread : Noncopyable, Thread::Tls::Base
 
 		void join(void **retval);
 
+		int detach();
+
 		/*
 		 * Inform the thread calling 'pthread_join()' that this thread can be
 		 * destroyed.
 		 */
 		void cancel();
 
-		void exit(void *retval)
+		void exit(void *retval) __attribute__((noreturn))
 		{
 			while (cleanup_pop(1)) { }
 			_retval = retval;
 			cancel();
+
+			/*
+			 * Block until the thread is destroyed by 'pthread_join()' or
+			 * register the thread for destruction if it is in detached state.
+			 */
+
+			_detach_blockade.block();
+
+			pthread_registry().cleanup(this);
+			sleep_forever();
 		}
 
 		void   *stack_addr() const { return _stack_addr; }
@@ -301,7 +325,7 @@ class Libc::Pthread_blockade : public Blockade, public Timeout_handler
 {
 	private:
 
-		Lock                   _blockade { Lock::LOCKED };
+		Genode::Blockade       _blockade;
 		Constructible<Timeout> _timeout;
 
 	public:
@@ -314,12 +338,12 @@ class Libc::Pthread_blockade : public Blockade, public Timeout_handler
 			}
 		}
 
-		void block() override { _blockade.lock(); }
+		void block() override { _blockade.block(); }
 
 		void wakeup() override
 		{
 			_woken_up = true;
-			_blockade.unlock();
+			_blockade.wakeup();
 		}
 
 		/**
@@ -328,7 +352,7 @@ class Libc::Pthread_blockade : public Blockade, public Timeout_handler
 		void handle_timeout() override
 		{
 			_expired = true;
-			_blockade.unlock();
+			_blockade.wakeup();
 		}
 };
 
@@ -347,6 +371,38 @@ struct Libc::Pthread_job : Monitor::Job
 			Job(fn, _blockade),
 			_blockade(timer_accessor, timeout_ms)
 		{ }
+};
+
+
+struct Libc::Pthread_mutex
+{
+	public:
+
+		class Guard
+		{
+			private:
+
+				Pthread_mutex &_mutex;
+
+			public:
+
+				explicit Guard(Pthread_mutex &mutex) : _mutex(mutex) { _mutex.lock(); }
+
+				~Guard() { _mutex.unlock(); }
+		};
+
+	private:
+
+		pthread_mutex_t _mutex;
+
+	public:
+
+		Pthread_mutex() { pthread_mutex_init(&_mutex, nullptr); }
+
+		~Pthread_mutex() { pthread_mutex_destroy(&_mutex); }
+
+		void lock()   { pthread_mutex_lock(&_mutex); }
+		void unlock() { pthread_mutex_unlock(&_mutex); }
 };
 
 

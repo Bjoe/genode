@@ -49,7 +49,7 @@ class Loader::Child : public Child_policy
 
 		Parent_services &_parent_services;
 
-		Service &_local_nitpicker_service;
+		Service &_local_gui_service;
 		Service &_local_rom_service;
 		Service &_local_cpu_service;
 		Service &_local_pd_service;
@@ -58,10 +58,10 @@ class Loader::Child : public Child_policy
 
 		Service &_matching_service(Service::Name const &name)
 		{
-			if (name == "Nitpicker") return _local_nitpicker_service;
-			if (name == "ROM")       return _local_rom_service;
-			if (name == "CPU")       return _local_cpu_service;
-			if (name == "PD")        return _local_pd_service;
+			if (name == "Gui") return _local_gui_service;
+			if (name == "ROM") return _local_rom_service;
+			if (name == "CPU") return _local_cpu_service;
+			if (name == "PD")  return _local_pd_service;
 
 			/* populate session-local parent service registry on demand */
 			Service *service = nullptr;
@@ -87,7 +87,7 @@ class Loader::Child : public Child_policy
 		      Service                   &local_rom_service,
 		      Service                   &local_cpu_service,
 		      Service                   &local_pd_service,
-		      Service                   &local_nitpicker_service,
+		      Service                   &local_gui_service,
 		      Signal_context_capability /* fault_sigh */)
 		:
 			_env(env),
@@ -97,7 +97,7 @@ class Loader::Child : public Child_policy
 			_cap_quota(Genode::Child::effective_quota(cap_quota)),
 			_ram_quota(Genode::Child::effective_quota(ram_quota)),
 			_parent_services(parent_services),
-			_local_nitpicker_service(local_nitpicker_service),
+			_local_gui_service(local_gui_service),
 			_local_rom_service(local_rom_service),
 			_local_cpu_service(local_cpu_service),
 			_local_pd_service(local_pd_service),
@@ -126,11 +126,12 @@ class Loader::Child : public Child_policy
 		}
 
 		Route resolve_session_request(Service::Name const &name,
-		                              Session_label const &label) override
+		                              Session_label const &label,
+		                              Session::Diag const  diag) override
 		{
 			return Route { .service = _matching_service(name),
 			               .label   = label,
-			               .diag    = Session::Diag() };
+			               .diag    = diag };
 		}
 };
 

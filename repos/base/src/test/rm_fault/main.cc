@@ -32,7 +32,7 @@ using namespace Genode;
  ***********/
 
 enum {
-	MANAGED_ADDR = 0x10000000,
+	MANAGED_ADDR = 0x18000000,
 	STOP_TEST    = 0xdead,
 	READ_TEST    = 0x12345,
 	WRITE_TEST   = READ_TEST - 1,
@@ -230,11 +230,12 @@ class Test_child_policy : public Child_policy
 		}
 
 		Route resolve_session_request(Service::Name const &name,
-		                              Session_label const &label) override
+		                              Session_label const &label,
+		                              Session::Diag const  diag) override
 		{
 			return Route { .service = _matching_service(name),
 			               .label   = label,
-			               .diag    = Session::Diag() };
+			               .diag    = diag };
 		}
 };
 

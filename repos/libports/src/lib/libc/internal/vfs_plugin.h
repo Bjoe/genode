@@ -36,7 +36,7 @@
 namespace Libc { class Vfs_plugin; }
 
 
-class Libc::Vfs_plugin : public Plugin
+class Libc::Vfs_plugin final : public Plugin
 {
 	public:
 
@@ -73,24 +73,58 @@ class Libc::Vfs_plugin : public Plugin
 
 	private:
 
+		struct Mmap_entry : Registry<Mmap_entry>::Element
+		{
+			void                  * const start;
+			Libc::File_descriptor * const fd;
+
+			Mmap_entry(Registry<Mmap_entry> &registry, void *start,
+			           Libc::File_descriptor *fd)
+			: Registry<Mmap_entry>::Element(registry, *this), start(start),
+			  fd(fd) { }
+		};
+
 		Genode::Allocator               &_alloc;
 		Vfs::File_system                &_root_fs;
 		Constructible<Genode::Directory> _root_dir { };
 		Vfs::Io_response_handler        &_response_handler;
 		Update_mtime               const _update_mtime;
+		Current_real_time               &_current_real_time;
 		bool                       const _pipe_configured;
+		Registry<Mmap_entry>             _mmap_registry;
 
 		/**
-		 * Sync a handle and propagate errors
+		 * Sync a handle
 		 */
-		int _vfs_sync(Vfs::Vfs_handle&);
+		void _vfs_sync(Vfs::Vfs_handle&);
 
 		/**
 		 * Update modification time
 		 */
 		void _vfs_write_mtime(Vfs::Vfs_handle&);
 
-		int _legacy_ioctl(File_descriptor *, int , char *);
+		int _legacy_ioctl(File_descriptor *, unsigned long, char *);
+
+		struct Ioctl_result
+		{
+			bool handled;
+			int  error;
+		};
+
+		/**
+		 * Terminal related I/O controls
+		 */
+		Ioctl_result _ioctl_tio(File_descriptor *, unsigned long, char *);
+
+		/**
+		 * Block related I/O controls
+		 */
+		Ioctl_result _ioctl_dio(File_descriptor *, unsigned long, char *);
+
+		/**
+		 * Sound related I/O controls
+		 */
+		Ioctl_result _ioctl_sndctl(File_descriptor *, unsigned long, char *);
 
 		/**
 		 * Call functor 'fn' with ioctl info for the given file descriptor 'fd'
@@ -118,12 +152,14 @@ class Libc::Vfs_plugin : public Plugin
 		           Genode::Allocator        &alloc,
 		           Vfs::Io_response_handler &handler,
 		           Update_mtime              update_mtime,
+		           Current_real_time        &current_real_time,
 		           Xml_node                  config)
 		:
 			_alloc(alloc),
 			_root_fs(env.vfs()),
 			_response_handler(handler),
 			_update_mtime(update_mtime),
+			_current_real_time(current_real_time),
 			_pipe_configured(_init_pipe_configured(config))
 		{
 			if (config.has_sub_node("libc"))
@@ -158,12 +194,11 @@ class Libc::Vfs_plugin : public Plugin
 		                     fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
 		                     struct timeval *timeout) override;
 
-		File_descriptor *open(const char *, int, int libc_fd);
-
-		File_descriptor *open(const char *path, int flags) override
-		{
-			return open(path, flags, ANY_FD);
-		}
+		/* kernel-specific API without monitor */
+		File_descriptor *open_from_kernel(const char *, int, int libc_fd);
+		int close_from_kernel(File_descriptor *);
+		::off_t lseek_from_kernel(File_descriptor *fd, ::off_t offset);
+		int     stat_from_kernel(const char *, struct stat *);
 
 		int     access(char const *, int) override;
 		int     close(File_descriptor *) override;
@@ -175,9 +210,10 @@ class Libc::Vfs_plugin : public Plugin
 		int     fsync(File_descriptor *fd) override;
 		int     ftruncate(File_descriptor *, ::off_t) override;
 		ssize_t getdirentries(File_descriptor *, char *, ::size_t , ::off_t *) override;
-		int     ioctl(File_descriptor *, int , char *) override;
+		int     ioctl(File_descriptor *, unsigned long, char *) override;
 		::off_t lseek(File_descriptor *fd, ::off_t offset, int whence) override;
 		int     mkdir(const char *, mode_t) override;
+		File_descriptor *open(const char *path, int flags) override;
 		int     pipe(File_descriptor *pipefdo[2]) override;
 		bool    poll(File_descriptor &fdo, struct pollfd &pfd) override;
 		ssize_t read(File_descriptor *, void *, ::size_t) override;

@@ -101,11 +101,12 @@ class Bomb_child : public Child_policy
 		}
 
 		Route resolve_session_request(Service::Name const &service_name,
-		                              Session_label const &label) override
+		                              Session_label const &label,
+		                              Session::Diag const  diag) override
 		{
 			return Route { .service = _matching_service(service_name, label),
 			               .label   = label,
-			               .diag    = Session::Diag() };
+			               .diag    = diag };
 		}
 };
 
@@ -140,8 +141,8 @@ unique_child_name(Children const &children, Bomb_child::Name const &binary_name,
                   unsigned const generation)
 {
 	/* serialize calls to this function */
-	static Lock lock;
-	Lock::Guard guard(lock);
+	static Mutex mutex;
+	Mutex::Guard guard(mutex);
 
 	for (unsigned cnt = 1; ; cnt++) {
 

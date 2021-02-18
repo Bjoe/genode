@@ -65,7 +65,8 @@ class Genode::Vm_session_component
 		Region_map                 &_region_map;
 		Board::Vm_page_table       &_table;
 		Board::Vm_page_table_array &_table_array;
-		unsigned                    _id_alloc { 0 };
+		Kernel::Vm::Identity        _id;
+		unsigned                    _vcpu_id_alloc { 0 };
 
 		static size_t _ds_size();
 		bool          _valid_id(Vcpu_id id) { return id.id < Board::VCPU_MAX; }
@@ -107,12 +108,13 @@ class Genode::Vm_session_component
 		void attach_pic(addr_t) override;
 		void detach(addr_t, size_t) override;
 
-		Dataspace_capability _cpu_state(Vcpu_id);
-		Vcpu_id              _create_vcpu(Thread_capability);
-		void                 _exception_handler(Signal_context_capability,
-		                                        Vcpu_id);
-		void                 _run(Vcpu_id);
-		void                 _pause(Vcpu_id);
+		Dataspace_capability    _cpu_state(Vcpu_id);
+		Vcpu_id                 _create_vcpu(Thread_capability);
+		void                    _exception_handler(Signal_context_capability,
+		                                           Vcpu_id);
+		void                    _run(Vcpu_id);
+		void                    _pause(Vcpu_id);
+		Capability<Native_vcpu> _native_vcpu(Vcpu_id);
 };
 
 #endif /* _CORE__VM_SESSION_COMPONENT_H_ */

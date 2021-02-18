@@ -17,8 +17,9 @@ SRC_CC = atexit.cc dummies.cc rlimit.cc sysctl.cc \
          plugin.cc plugin_registry.cc select.cc exit.cc environ.cc sleep.cc \
          pread_pwrite.cc readv_writev.cc poll.cc \
          vfs_plugin.cc dynamic_linker.cc signal.cc \
-         socket_operations.cc socket_fs_plugin.cc syscall.cc legacy.cc \
-         getpwent.cc getrandom.cc fork.cc execve.cc kernel.cc component.cc
+         socket_operations.cc socket_fs_plugin.cc syscall.cc \
+         getpwent.cc getrandom.cc fork.cc execve.cc kernel.cc component.cc \
+         genode.cc
 
 #
 # Pthreads

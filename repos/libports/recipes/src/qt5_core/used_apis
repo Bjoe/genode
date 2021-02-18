@@ -1,7 +1,0 @@
-base
-libc
-os
-so
-stdcxx
-timer_session
-zlib

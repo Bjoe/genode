@@ -43,7 +43,6 @@ TAR_OPT(libc) += usr/src/sys/x86
 #
 # Check for tools
 #
-$(call check_tool,svn)
 $(call check_tool,flex)
 $(call check_tool,bison)
 $(call check_tool,rpcgen)
@@ -141,7 +140,7 @@ DIR_CONTENT(include/libc/sys) := \
                 utsname.h elf.h mtio.h _stdint.h atomic_common.h _ucontext.h \
                 _cpuset.h _bitset.h bitset.h _stdarg.h _uio.h auxv.h random.h \
                 _sockaddr_storage.h termios.h _termios.h _umtx.h kerneldump.h \
-                conf.h disk_zone.h counter.h)
+                conf.h disk_zone.h counter.h soundcard.h)
 
 DIRS += include/libc/sys/disk
 DIR_CONTENT(include/libc/sys/disk) := $(D)/sys/sys/disk/*h
@@ -258,6 +257,11 @@ generated_files += $(generated_rpcsvc_files)
 # generate files before assembling the public include directory tree
 _dirs: $(generated_files)
 $(generated_files) : $(DOWNLOADS)
+
+default: include/libc/osreldate.h
+include/libc/osreldate.h: _dirs
+	@$(MSG_GENERATE)$(notdir $@)
+	$(VERBOSE)echo '#include <sys/param.h>' > $@
 
 
 #

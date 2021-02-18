@@ -18,7 +18,8 @@ import_from_depot [depot_user]/src/[base_src] \
                   [depot_user]/src/init \
                   [depot_user]/src/libc \
                   [depot_user]/src/vfs \
-                  [depot_user]/src/vfs_lwip
+                  [depot_user]/src/vfs_lwip \
+                  [depot_user]/src/vfs_pipe
 
 build { server/tcp_terminal test/terminal_echo }
 
@@ -42,8 +43,8 @@ install_config {
 		<resource name="RAM" quantum="1M"/>
 		<provides> <service name="Timer"/> </provides>
 	</start>
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1000" managing_system="yes">
+		<resource name="RAM" quantum="32M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
@@ -60,8 +61,9 @@ install_config {
 			<vfs>
 				<dir name="dev"> <log/> </dir>
 				<dir name="socket"> <lwip dhcp="yes"/> </dir>
+				<dir name="pipe"> <pipe/> </dir>
 			</vfs>
-			<libc stdout="/dev/log" socket="/socket"/>
+			<libc stdout="/dev/log" socket="/socket" pipe="/pipe"/>
 		</config>
 	</start>
 	<start name="test-terminal_echo">
@@ -70,21 +72,13 @@ install_config {
 </config>
 }
 
-build_boot_image { tcp_terminal test-terminal_echo libc_pipe.lib.so }
+build_boot_image { tcp_terminal test-terminal_echo }
 
 
 # qemu config
 
-proc qemu_nic_model {} {
-	if [have_spec x86]     { return e1000 }
-	if [have_spec lan9118] { return lan9118 }
-	if [have_spec zynq]    { return cadence_gem }
-	return nic_model_missing
-}
-
 append qemu_args " -nographic "
-append qemu_args " -netdev user,id=net0,hostfwd=tcp::5555-:8888 "
-append qemu_args " -net nic,model=[qemu_nic_model],netdev=net0 "
+append_qemu_nic_args "hostfwd=tcp::5555-:8888"
 
 run_genode_until forever
 

@@ -11,6 +11,7 @@ import_from_depot [depot_user]/src/[base_src] \
                   [depot_user]/src/coreutils \
                   [depot_user]/src/vfs \
                   [depot_user]/src/vfs_pipe \
+                  [depot_user]/src/nitpicker \
                   [depot_user]/src/fs_rom
 
 # write default vimrc file
@@ -48,24 +49,39 @@ install_config {
 		<provides><service name="Timer"/></provides>
 	</start>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
+	</start>
+
+	<start name="nitpicker">
+		<resource name="RAM" quantum="4M"/>
 		<provides>
-			<service name="Input"/> <service name="Framebuffer"/>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
 		</provides>
+		<config focus="rom">
+			<capture/> <event/>
+			<domain name="default" layer="2" content="client" label="no" hover="always"/>
+			<default-policy domain="default"/>
+		</config>
+		<route>
+			<any-service> <parent/> <any-child/> </any-service>
+		</route>
 	</start>
 
 	<start name="terminal" caps="110">
-		<resource name="RAM" quantum="2M"/>
+		<resource name="RAM" quantum="6M"/>
 		<provides><service name="Terminal"/></provides>
 		<route>
 			<service name="ROM" label="config"> <parent label="terminal.config"/> </service>
+			<service name="Gui"> <child name="nitpicker"/> </service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
@@ -84,9 +100,9 @@ install_config {
 				<dir name="tmp"> <ram/> </dir>
 				<dir name="dev">
 					<zero/> <null/> <terminal/>
-					<dir name="pipe"> <pipe/> </dir>
 					<inline name="rtc">2018-01-01 00:01</inline>
 				</dir>
+				<dir name="pipe"> <pipe/> </dir>
 			</vfs>
 
 			<policy label_prefix="vfs_rom" root="/"/>
@@ -109,7 +125,7 @@ install_config {
 		<resource name="RAM" quantum="30M" />
 		<config ld_verbose="yes">
 			<libc stdin="/dev/terminal" stdout="/dev/terminal"
-			      stderr="/dev/terminal" rtc="/dev/rtc" pipe="/dev/pipe"/>
+			      stderr="/dev/terminal" rtc="/dev/rtc" pipe="/pipe"/>
 			<vfs> <fs/> </vfs>
 			<arg value="bash"/>
 			<env key="TERM" value="screen"/>
@@ -124,6 +140,10 @@ install_config {
 		</route>
 	</start>
 </config>}
+
+set fd [open [run_dir]/genode/focus w]
+puts $fd "<focus label=\"terminal -> \" domain=\"default\"/>"
+close $fd
 
 build { lib/ld test/fork test/execve }
 

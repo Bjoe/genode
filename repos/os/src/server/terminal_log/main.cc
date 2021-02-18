@@ -52,11 +52,11 @@ namespace Genode {
 			 * The following function's code is a modified variant of the one in:
 			 * 'base/src/core/include/log_session_component.h'
 			 */
-			size_t write(String const &string_buf) override
+			void write(String const &string_buf) override
 			{
 				if (!(string_buf.valid_string())) {
 					Genode::error("corrupted string");
-					return 0;
+					return;
 				}
 
 				char const *string = string_buf.string();
@@ -73,7 +73,7 @@ namespace Genode {
 				enum { ESC = 27 };
 				if ((string[0] == ESC) && (len == 5) && (string[4] == '\n')) {
 					_terminal.write(string, len - 1);
-					return len;
+					return;
 				}
 
 				_terminal.write(_label, strlen(_label));
@@ -85,8 +85,6 @@ namespace Genode {
 
 				/* carriage-return as expected by hardware terminals on newline */
 				_terminal.write("\r", 1);
-
-				return len;
 			}
 	};
 
@@ -104,14 +102,6 @@ namespace Genode {
 			 */
 			Termlog_component *_create_session(const char *args) override
 			{
-				size_t ram_quota =
-					Arg_string::find_arg(args, "ram_quota"  ).ulong_value(0);
-
-				/* delete ram quota by the memory needed for the session */
-				size_t session_size = max((size_t)4096, sizeof(Termlog_component));
-				if (ram_quota < session_size)
-					throw Insufficient_ram_quota();
-
 				char label_buf[Termlog_component::LABEL_LEN];
 
 				Arg label_arg = Arg_string::find_arg(args, "label");

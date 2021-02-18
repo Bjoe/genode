@@ -16,7 +16,6 @@
 
 /* Genode includes */
 #include <timer_session/connection.h>
-#include <base/allocator.h>
 #include <net/dhcp.h>
 
 namespace Net {
@@ -37,13 +36,10 @@ class Net::Dhcp_client
 			INIT = 0, SELECT = 1, REQUEST = 2, BOUND = 3, RENEW = 4, REBIND = 5
 		};
 
-		Genode::Allocator                    &_alloc;
 		Interface                            &_interface;
 		State                                 _state { State::INIT };
 		Timer::One_shot_timeout<Dhcp_client>  _timeout;
 		Genode::uint64_t                      _lease_time_sec = 0;
-
-		void _handle_dhcp_reply(Dhcp_packet &dhcp);
 
 		void _handle_timeout(Genode::Duration);
 
@@ -64,12 +60,10 @@ class Net::Dhcp_client
 
 	public:
 
-		Dhcp_client(Genode::Allocator &alloc,
-		            Timer::Connection &timer,
+		Dhcp_client(Timer::Connection &timer,
 		            Interface         &interface);
 
-		void handle_ip(Ethernet_frame &eth,
-		               Size_guard     &size_guard);
+		void handle_dhcp_reply(Dhcp_packet &dhcp);
 
 		void discover();
 };

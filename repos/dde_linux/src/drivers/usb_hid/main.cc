@@ -14,7 +14,6 @@
 #include <base/component.h>
 
 #include <lx_kit/env.h>
-#include <lx_kit/malloc.h>
 #include <lx_kit/scheduler.h>
 #include <lx_kit/timer.h>
 
@@ -142,7 +141,14 @@ Driver::Device::Device(Driver & driver, Label label)
 Driver::Device::~Device()
 {
 	driver.devices.remove(&le);
+}
+
+
+bool Driver::Device::deinit()
+{
 	if (udev) unregister_device();
+
+	return !udev && !state_task.handling_signal && !urb_task.handling_signal;
 }
 
 
@@ -163,6 +169,8 @@ void Driver::main_task_entry(void * arg)
 	module_hid_init();
 	module_hid_generic_init();
 	module_ch_driver_init();
+	module_holtek_mouse_driver_init();
+	module_apple_driver_init();
 	module_ms_driver_init();
 	module_mt_driver_init();
 	module_wacom_driver_init();
@@ -183,8 +191,6 @@ void Driver::main_task_entry(void * arg)
 
 	Genode::log("Configured HID screen with ", screen_x, "x", screen_y,
 	            " (multitouch=", multi_touch ? "true" : "false", ")");
-
-	driver->env.parent().announce(driver->ep.manage(driver->root));
 
 	for (;;) {
 		if (!use_report)
@@ -230,16 +236,22 @@ void Driver::scan_report()
 	};
 
 	devices.for_each([&] (Device & d) {
-		if (!d.updated) destroy(heap, &d); });
+		if (!d.updated && d.deinit())
+			destroy(heap, &d);
+	});
 }
 
 
 void Driver::input_callback(Input_event type, unsigned code,
                             int ax, int ay, int rx, int ry)
 {
-	using namespace Input;
+	auto submit = [&] (Input::Event const &ev)
+	{
+		driver->event.with_batch([&] (Event::Session_client::Batch &batch) {
+			batch.submit(ev); });
+	};
 
-	auto submit = [&] (Event const &ev) { driver->session.submit(ev); };
+	using namespace Input;
 
 	switch (type) {
 	case EVENT_TYPE_PRESS:   submit(Press{Keycode(code)});    break;
@@ -276,7 +288,6 @@ Driver::Driver(Genode::Env &env) : env(env)
 	LX_MUTEX_INIT(wacom_udev_list_lock);
 
 	Lx::scheduler(&env);
-	Lx::malloc_init(env, heap);
 	Lx::timer(&env, &ep, &heap, &jiffies);
 
 	main_task.construct(env.ep(), main_task_entry, reinterpret_cast<void*>(this),

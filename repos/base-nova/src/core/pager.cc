@@ -7,14 +7,13 @@
  */
 
 /*
- * Copyright (C) 2010-2017 Genode Labs GmbH
+ * Copyright (C) 2010-2020 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
  * under the terms of the GNU Affero General Public License version 3.
  */
 
 /* Genode includes */
-#include <util/construct_at.h>
 #include <rm_session/rm_session.h>
 
 /* base-internal includes */
@@ -49,26 +48,43 @@ static Nova::Hip const &kernel_hip()
 	return *reinterpret_cast<Hip const *>(__initial_sp);
 }
 
-/* pager activation threads storage and handling - one thread per CPU */
-enum { PAGER_CPUS = Platform::MAX_SUPPORTED_CPUS, PAGER_STACK_SIZE = 2*4096 };
 
-static char pager_activation_mem[sizeof (Pager_activation<PAGER_STACK_SIZE>) * PAGER_CPUS];
-static Pager_activation_base * pager_threads[PAGER_CPUS];
-
-
-static unsigned which_cpu(Pager_activation_base &pager)
+/**
+ * Pager threads - one thread per CPU
+ */
+struct Pager_thread: public Thread
 {
-	Pager_activation_base * start = reinterpret_cast<Pager_activation_base *>(&pager_activation_mem);
-	Pager_activation_base * end   = start + PAGER_CPUS;
+	Pager_thread(Affinity::Location location)
+	: Thread(Cpu_session::Weight::DEFAULT_WEIGHT, "pager", 2 * 4096, location)
+	{
+		/* creates local EC */
+		Thread::start();
 
-	if (start <= &pager && &pager < end) {
-		/* pager of one of the non boot CPUs */
-		unsigned cpu_id = &pager - start;
-		return cpu_id;
+		reinterpret_cast<Nova::Utcb *>(Thread::utcb())->crd_xlt = Obj_crd(0, ~0UL);
 	}
 
-	/* pager of boot CPU */
-	return 0;
+	void entry() override { }
+};
+
+enum { PAGER_CPUS = Platform::MAX_SUPPORTED_CPUS };
+static Constructible<Pager_thread> pager_threads[PAGER_CPUS];
+
+static Pager_thread &pager_thread(Affinity::Location location,
+                                  Platform &platform)
+{
+	unsigned const pager_index = platform.pager_index(location);
+	unsigned const kernel_cpu_id = platform.kernel_cpu_id(location);
+
+	if (kernel_hip().is_cpu_enabled(kernel_cpu_id) &&
+	    pager_index < PAGER_CPUS && pager_threads[pager_index].constructed())
+		return *pager_threads[pager_index];
+
+	warning("invalid CPU parameter used in pager object: ",
+	        pager_index, "->", kernel_cpu_id, " location=",
+	        location.xpos(), "x", location.ypos(), " ",
+	        location.width(), "x", location.height());
+
+	throw Invalid_thread();
 }
 
 
@@ -113,8 +129,6 @@ void Pager_object::_page_fault_handler(Pager_object &obj)
 
 	Ipc_pager ipc_pager(utcb, obj.pd_sel(), platform_specific().core_pd_sel());
 
-	Pager_activation_base &pager_thread = static_cast<Pager_activation_base &>(myself);
-
 	/* potential request to ask for EC cap or signal SM cap */
 	if (utcb.msg_words() == 1)
 		_invoke_handler(obj);
@@ -124,7 +138,7 @@ void Pager_object::_page_fault_handler(Pager_object &obj)
 	 * handler thread which may respond via wake_up() (ep thread) before
 	 * we are done here - we have to lock the whole page lookup procedure
 	 */
-	obj._state_lock.lock();
+	obj._state_lock.acquire();
 
 	obj._state.thread.ip     = ipc_pager.fault_ip();
 	obj._state.thread.sp     = 0;
@@ -150,7 +164,7 @@ void Pager_object::_page_fault_handler(Pager_object &obj)
 			if (res == Nova::NOVA_PD_OOM) {
 				obj._state.unblock_pause_sm();
 				obj._state.unblock();
-				obj._state_lock.unlock();
+				obj._state_lock.release();
 
 				/* block until revoke is due */
 				ipc_pager.reply_and_wait_for_fault(obj.sel_sm_block_oom());
@@ -164,15 +178,16 @@ void Pager_object::_page_fault_handler(Pager_object &obj)
 	if (!error) {
 		obj._state.unblock_pause_sm();
 		obj._state.unblock();
-		obj._state_lock.unlock();
+		obj._state_lock.release();
 		ipc_pager.reply_and_wait_for_fault();
 	}
 
 	char const * const client_thread = obj.client_thread();
 	char const * const client_pd     = obj.client_pd();
 
-	Page_fault_info const fault_info(client_pd, client_thread,
-	                                 which_cpu(pager_thread),
+	unsigned const cpu_id = platform_specific().pager_index(myself.affinity());
+
+	Page_fault_info const fault_info(client_pd, client_thread, cpu_id,
 	                                 ipc_pager.fault_ip(),
 	                                 ipc_pager.fault_addr(),
 	                                 ipc_pager.sp(),
@@ -181,7 +196,7 @@ void Pager_object::_page_fault_handler(Pager_object &obj)
 	/* region manager fault - to be handled */
 	log("page fault, ", fault_info, " reason=", error);
 
-	obj._state_lock.unlock();
+	obj._state_lock.release();
 
 	/* block the faulting thread until region manager is done */
 	ipc_pager.reply_and_wait_for_fault(obj.sel_sm_block_pause());
@@ -190,9 +205,8 @@ void Pager_object::_page_fault_handler(Pager_object &obj)
 
 void Pager_object::exception(uint8_t exit_id)
 {
-	Thread                &myself       = *Thread::myself();
-	Utcb                  &utcb         = *reinterpret_cast<Utcb *>(myself.utcb());
-	Pager_activation_base &pager_thread = static_cast<Pager_activation_base &>(myself);
+	Thread &myself = *Thread::myself();
+	Utcb   &utcb   = *reinterpret_cast<Utcb *>(myself.utcb());
 
 	if (exit_id > PT_SEL_PARENT)
 		nova_die();
@@ -204,7 +218,7 @@ void Pager_object::exception(uint8_t exit_id)
 	uint8_t res = 0xFF;
 	addr_t  mtd = 0;
 
-	_state_lock.lock();
+	_state_lock.acquire();
 
 	/* remember exception type for Cpu_session::state() calls */
 	_state.thread.trapno = exit_id;
@@ -218,10 +232,12 @@ void Pager_object::exception(uint8_t exit_id)
 		/* nobody handles this exception - so thread will be stopped finally */
 		_state.mark_dead();
 
+		unsigned const cpu_id = platform_specific().pager_index(myself.affinity());
+
 		warning("unresolvable exception ", exit_id,  ", "
 		        "pd '",     client_pd(),            "', "
 		        "thread '", client_thread(),        "', "
-		        "cpu ",     which_cpu(pager_thread), ", "
+		        "cpu ",     cpu_id,                  ", "
 		        "ip=",      Hex(fault_ip),            " "
 		        "sp=",      Hex(fault_sp),            " "
 		        "bp=",      Hex(fault_bp),            " ",
@@ -238,7 +254,7 @@ void Pager_object::exception(uint8_t exit_id)
 		}
 	}
 
-	_state_lock.unlock();
+	_state_lock.release();
 
 	utcb.set_msg_word(0);
 	utcb.mtd = mtd;
@@ -247,12 +263,68 @@ void Pager_object::exception(uint8_t exit_id)
 }
 
 
+bool Pager_object::_migrate_thread()
+{
+	bool const valid_migrate = (_state.migrate() && _badge);
+	if (!valid_migrate)
+		return false;
+
+	_state.reset_migrate();
+
+	try {
+		/* revoke all exception portals pointing to current pager */
+		Platform_thread &thread = *reinterpret_cast<Platform_thread *>(_badge);
+
+		Nova::revoke(Obj_crd(_selectors, 2));
+
+		/* revoke all exception portals selectors */
+		Nova::revoke(Obj_crd(exc_pt_sel_client()+0x00, 4));
+		Nova::revoke(Obj_crd(exc_pt_sel_client()+0x10, 3));
+		Nova::revoke(Obj_crd(exc_pt_sel_client()+0x18, 1));
+		Nova::revoke(Obj_crd(exc_pt_sel_client()+0x1f, 0));
+
+		/* re-create portals bound to pager on new target CPU */
+		_location   = _next_location;
+		_exceptions = Exception_handlers(*this);
+		_construct_pager();
+
+		/* map all exception portals to thread pd */
+		thread.prepare_migration();
+
+		/* syscall to migrate */
+		unsigned const migrate_to = platform_specific().kernel_cpu_id(_location);
+		uint8_t res = syscall_retry(*this, [&]() {
+			return ec_ctrl(EC_MIGRATE, _state.sel_client_ec, migrate_to,
+			               Obj_crd(EC_SEL_THREAD, 0, Obj_crd::RIGHT_EC_RECALL));
+		});
+
+		if (res == Nova::NOVA_OK)
+			thread.finalize_migration(_location);
+
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
+
 void Pager_object::_recall_handler(Pager_object &obj)
 {
 	Thread &myself = *Thread::myself();
 	Utcb   &utcb   = *reinterpret_cast<Utcb *>(myself.utcb());
 
-	obj._state_lock.lock();
+	/* acquire mutex */
+	obj._state_lock.acquire();
+
+	/* check for migration */
+	if (obj._migrate_thread()) {
+		/* release mutex */
+		obj._state_lock.release();
+
+		utcb.set_msg_word(0);
+		utcb.mtd = 0;
+		reply(myself.stack_top());
+	}
 
 	if (obj._state.modified) {
 		obj._copy_state_to_utcb(utcb);
@@ -283,7 +355,7 @@ void Pager_object::_recall_handler(Pager_object &obj)
 		obj._state.block_pause_sm();
 	}
 
-	obj._state_lock.unlock();
+	obj._state_lock.release();
 
 	utcb.set_msg_word(0);
 	reply(myself.stack_top(), sm);
@@ -413,7 +485,7 @@ void Pager_object::_invoke_handler(Pager_object &obj)
 
 void Pager_object::wake_up()
 {
-	Lock::Guard _state_lock_guard(_state_lock);
+	Mutex::Guard _state_lock_guard(_state_lock);
 
 	if (!_state.blocked())
 		return;
@@ -434,24 +506,9 @@ void Pager_object::wake_up()
 }
 
 
-void Pager_object::client_cancel_blocking()
-{
-	uint8_t res = sm_ctrl(exc_pt_sel_client() + SM_SEL_EC, SEMAPHORE_UP);
-	if (res != NOVA_OK)
-		warning("canceling blocked client failed (thread sm)");
-
-	if (!_state.has_signal_sm())
-		return;
-
-	res = sm_ctrl(exc_pt_sel_client() + PT_SEL_STARTUP, SEMAPHORE_UP);
-	if (res != NOVA_OK)
-		warning("canceling blocked client failed (signal sm)");
-}
-
-
 uint8_t Pager_object::client_recall(bool get_state_and_block)
 {
-	Lock::Guard _state_lock_guard(_state_lock);
+	Mutex::Guard _state_lock_guard(_state_lock);
 	return _unsynchronized_client_recall(get_state_and_block);
 }
 
@@ -533,16 +590,7 @@ template <uint8_t EV>
 void Exception_handlers::register_handler(Pager_object &obj, Mtd mtd,
                                           void (* __attribute__((regparm(1))) func)(Pager_object &))
 {
-	unsigned const genode_cpu_id = obj.location().xpos();
-	unsigned const kernel_cpu_id = platform_specific().kernel_cpu_id(genode_cpu_id);
-
-	if (!kernel_hip().is_cpu_enabled(kernel_cpu_id) ||
-	    !pager_threads[genode_cpu_id]) {
-		warning("invalid CPU parameter used in pager object");
-		throw Invalid_thread();
-	}
-
-	addr_t const ec_sel = pager_threads[genode_cpu_id]->native_thread().ec_sel;
+	addr_t const ec_sel = pager_thread(obj.location(), platform_specific()).native_thread().ec_sel;
 
 	/* compiler generates instance of exception entry if not specified */
 	addr_t entry = func ? (addr_t)func : (addr_t)(&_handler<EV>);
@@ -597,76 +645,25 @@ Exception_handlers::Exception_handlers(Pager_object &obj)
  ** Pager object **
  ******************/
 
-
-Pager_object::Pager_object(Cpu_session_capability cpu_session_cap,
-                           Thread_capability thread_cap, unsigned long badge,
-                           Affinity::Location location, Session_label const &,
-                           Cpu_session::Name const &)
-:
-	_badge(badge),
-	_selectors(cap_map().insert(2)),
-	_client_exc_pt_sel(cap_map().insert(NUM_INITIAL_PT_LOG2)),
-	_cpu_session_cap(cpu_session_cap), _thread_cap(thread_cap),
-	_location(location),
-	_exceptions(*this),
-	_pd_target(Native_thread::INVALID_INDEX)
+void Pager_object::_construct_pager()
 {
-	uint8_t res;
-
-	addr_t const pd_sel  = platform_specific().core_pd_sel();
-	_state._status       = 0;
-	_state.modified      = false;
-	_state.sel_client_ec = Native_thread::INVALID_INDEX;
-	_state.block();
-
-	if (Native_thread::INVALID_INDEX == _selectors ||
-	    Native_thread::INVALID_INDEX == _client_exc_pt_sel)
-		throw Invalid_thread();
-
-	/* ypos information not supported by now */
-	if (location.ypos()) {
-		warning("unsupported location ", location.xpos(), "x", location.ypos());
-		throw Invalid_thread();
-	}
-
-	/* place Pager_object on specified CPU by selecting proper pager thread */
-	unsigned const genode_cpu_id = location.xpos();
-	unsigned const kernel_cpu_id = platform_specific().kernel_cpu_id(genode_cpu_id);
-	if (!kernel_hip().is_cpu_enabled(kernel_cpu_id) ||
-	    !pager_threads[genode_cpu_id]) {
-		warning("invalid CPU parameter used in pager object");
-		throw Invalid_thread();
-	}
-
-	addr_t ec_sel = pager_threads[genode_cpu_id]->native_thread().ec_sel;
+	addr_t const pd_sel = platform_specific().core_pd_sel();
+	addr_t const ec_sel = pager_thread(_location, platform_specific()).native_thread().ec_sel;
 
 	/* create portal for page-fault handler - 14 */
 	_exceptions.register_handler<14>(*this, Mtd::QUAL | Mtd::ESP | Mtd::EIP,
 	                                 _page_fault_handler);
 
-	/* create portal for startup handler - 26 */
-	Mtd const mtd_startup(Mtd::ESP | Mtd::EIP);
-	_exceptions.register_handler<PT_SEL_STARTUP>(*this, mtd_startup,
-	                                             _startup_handler);
-
-	/* create portal for recall handler - 31 */
+	/* create portal for recall handler */
 	Mtd const mtd_recall(Mtd::ESP | Mtd::EIP | Mtd::ACDB | Mtd::EFL |
 	                     Mtd::EBSD | Mtd::FSGS);
 	_exceptions.register_handler<PT_SEL_RECALL>(*this, mtd_recall,
 	                                            _recall_handler);
 
-	/*
-	 * Create semaphore required for Genode locking. It can be later on
-	 * requested by the thread the same way as all exception portals.
-	 */
-	res = Nova::create_sm(exc_pt_sel_client() + SM_SEL_EC, pd_sel, 0);
-	if (res != Nova::NOVA_OK) {
-		throw Invalid_thread();
-	}
-
 	/* create portal for final cleanup call used during destruction */
-	res = create_portal(sel_pt_cleanup(), pd_sel, ec_sel, Mtd(0),
-	                    reinterpret_cast<addr_t>(_invoke_handler), this);
+	uint8_t res = create_portal(sel_pt_cleanup(), pd_sel, ec_sel, Mtd(0),
+	                            reinterpret_cast<addr_t>(_invoke_handler),
+	                            this);
 	if (res != Nova::NOVA_OK) {
 		error("could not create pager cleanup portal, error=", res);
 		throw Invalid_thread();
@@ -682,6 +679,69 @@ Pager_object::Pager_object(Cpu_session_capability cpu_session_cap,
 	res = Nova::create_sm(sel_sm_block_oom(), pd_sel, 0);
 	if (res != Nova::NOVA_OK) {
 		throw Invalid_thread();
+	}
+}
+
+
+Pager_object::Pager_object(Cpu_session_capability cpu_session_cap,
+                           Thread_capability thread_cap, unsigned long badge,
+                           Affinity::Location location, Session_label const &,
+                           Cpu_session::Name const &)
+:
+	_badge(badge),
+	_selectors(cap_map().insert(2)),
+	_client_exc_pt_sel(cap_map().insert(NUM_INITIAL_PT_LOG2)),
+	_cpu_session_cap(cpu_session_cap), _thread_cap(thread_cap),
+	_location(location),
+	_exceptions(*this),
+	_pd_target(Native_thread::INVALID_INDEX)
+{
+	_state._status       = 0;
+	_state.modified      = false;
+	_state.sel_client_ec = Native_thread::INVALID_INDEX;
+	_state.block();
+
+	if (Native_thread::INVALID_INDEX == _selectors ||
+	    Native_thread::INVALID_INDEX == _client_exc_pt_sel)
+		throw Invalid_thread();
+
+	_construct_pager();
+
+	/* create portal for startup handler */
+	Mtd const mtd_startup(Mtd::ESP | Mtd::EIP);
+	_exceptions.register_handler<PT_SEL_STARTUP>(*this, mtd_startup,
+	                                             _startup_handler);
+
+	/*
+	 * Create semaphore required for Genode locking. It can be later on
+	 * requested by the thread the same way as all exception portals.
+	 */
+	addr_t const pd_sel = platform_specific().core_pd_sel();
+	uint8_t const res = Nova::create_sm(exc_pt_sel_client() + SM_SEL_EC,
+	                                    pd_sel, 0);
+	if (res != Nova::NOVA_OK)
+		throw Invalid_thread();
+}
+
+
+void Pager_object::migrate(Affinity::Location location)
+{
+	Mutex::Guard _state_lock_guard(_state_lock);
+
+	if (_state.blocked())
+		return;
+
+	if (location.xpos() == _location.xpos() &&
+	    location.ypos() == _location.ypos())
+		return;
+
+	/* initiate migration by recall handler */
+	bool const just_recall = false;
+	uint8_t const res = _unsynchronized_client_recall(just_recall);
+	if (res == Nova::NOVA_OK) {
+		_next_location = location;
+
+		_state.request_migrate();
 	}
 }
 
@@ -891,23 +951,20 @@ void Pager_object::_oom_handler(addr_t pager_dst, addr_t pager_src,
 }
 
 
-addr_t Pager_object::get_oom_portal()
+addr_t Pager_object::create_oom_portal()
 {
-	addr_t   const pt_oom        = sel_oom_portal();
-	unsigned const genode_cpu_id = _location.xpos();
-	unsigned const kernel_cpu_id = platform_specific().kernel_cpu_id(genode_cpu_id);
-	addr_t   const core_pd_sel   = platform_specific().core_pd_sel();
+	try {
+		addr_t const pt_oom      = sel_oom_portal();
+		addr_t const core_pd_sel = platform_specific().core_pd_sel();
+		Pager_thread &thread     = pager_thread(_location, platform_specific());
+		addr_t const ec_sel      = thread.native_thread().ec_sel;
 
-	if (kernel_hip().is_cpu_enabled(kernel_cpu_id) &&
-	    pager_threads[genode_cpu_id]) {
-
-		addr_t const ec_sel = pager_threads[genode_cpu_id]->native_thread().ec_sel;
 		uint8_t res = create_portal(pt_oom, core_pd_sel, ec_sel, Mtd(0),
 		                            reinterpret_cast<addr_t>(_oom_handler),
 		                            this);
 		if (res == Nova::NOVA_OK)
 			return pt_oom;
-	}
+	} catch (...) { }
 
 	error("creating portal for out of memory notification failed");
 	return 0;
@@ -928,26 +985,6 @@ const char * Pager_object::client_pd() const
 }
 
 /**********************
- ** Pager activation **
- **********************/
-
-Pager_activation_base::Pager_activation_base(const char *name, size_t stack_size)
-:
-	Thread(Cpu_session::Weight::DEFAULT_WEIGHT, name, stack_size,
-	       Affinity::Location(which_cpu(*this), 0)),
-	_cap(Native_capability()), _ep(0), _cap_valid(Lock::LOCKED)
-{
-	/* creates local EC */
-	Thread::start();
-
-	reinterpret_cast<Nova::Utcb *>(Thread::utcb())->crd_xlt = Obj_crd(0, ~0UL);
-}
-
-
-void Pager_activation_base::entry() { }
-
-
-/**********************
  ** Pager entrypoint **
  **********************/
 
@@ -961,17 +998,15 @@ Pager_entrypoint::Pager_entrypoint(Rpc_cap_factory &)
 	}
 
 	/* detect enabled CPUs and create per CPU a pager thread */
-	typedef Pager_activation<PAGER_STACK_SIZE> Pager;
-	Pager * pager_of_cpu = reinterpret_cast<Pager *>(&pager_activation_mem);
+	platform_specific().for_each_location([&](Affinity::Location &location) {
+		unsigned const pager_index = platform_specific().pager_index(location);
+		unsigned const kernel_cpu_id = platform_specific().kernel_cpu_id(location);
 
-	for (unsigned i = 0; i < kernel_hip().cpus(); i++, pager_of_cpu++) {
-		unsigned const kernel_cpu_id = platform_specific().kernel_cpu_id(i);
 		if (!kernel_hip().is_cpu_enabled(kernel_cpu_id))
-			continue;
+			return;
 
-		pager_threads[i] = pager_of_cpu;
-		construct_at<Pager>(pager_threads[i]);
-	}
+		pager_threads[pager_index].construct(location);
+	});
 }
 
 

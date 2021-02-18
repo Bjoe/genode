@@ -331,11 +331,6 @@ class Genode::Thread
 		Thread_capability cap() const { return _thread_cap; }
 
 		/**
-		 * Cancel currently blocking operation
-		 */
-		void cancel_blocking();
-
-		/**
 		 * Return kernel-specific thread meta data
 		 */
 		Native_thread &native_thread();
@@ -418,6 +413,16 @@ class Genode::Thread
 		}
 
 		/**
+		 * Log null-terminated string as trace event using log_output policy
+		 *
+		 * \return true if trace is really put to buffer
+		 */
+		static bool trace_captured(char const *cstring)
+		{
+			return _logger()->log_captured(cstring, strlen(cstring));
+		}
+
+		/**
 		 * Log binary data as trace event
 		 */
 		static void trace(char const *data, size_t len)
@@ -426,7 +431,7 @@ class Genode::Thread
 		}
 
 		/**
-		 * Log trace event as defined in base/trace.h
+		 * Log trace event as defined in base/trace/events.h
 		 */
 		template <typename EVENT>
 		static void trace(EVENT const *event) { _logger()->log(event); }
@@ -435,66 +440,6 @@ class Genode::Thread
 		 * Thread affinity
 		 */
 		Affinity::Location affinity() const { return _affinity; }
-};
-
-
-template <unsigned STACK_SIZE>
-class Genode::Thread_deprecated : public Thread
-{
-	public:
-
-		/**
-		 * Constructor
-		 *
-		 * \param weight    weighting regarding the CPU session quota
-		 * \param name      thread name (for debugging)
-		 * \param type      enables selection of special construction
-		 */
-		explicit Thread_deprecated(size_t weight, const char *name)
-		: Thread(weight, name, STACK_SIZE, Type::NORMAL) { }
-
-		/**
-		 * Constructor
-		 *
-		 * \param weight     weighting regarding the CPU session quota
-		 * \param name       thread name (for debugging)
-		 * \param type       enables selection of special construction
-		 *
-		 * \noapi
-		 */
-		explicit Thread_deprecated(size_t weight, const char *name, Type type)
-		: Thread(weight, name, STACK_SIZE, type) { }
-
-		/**
-		 * Constructor
-		 *
-		 * \param weight       weighting regarding the CPU session quota
-		 * \param name         thread name (for debugging)
-		 * \param cpu_session  thread created via specific cpu session
-		 *
-		 * \noapi
-		 */
-		explicit Thread_deprecated(size_t weight, const char *name,
-		                Cpu_session * cpu_session)
-		: Thread(weight, name, STACK_SIZE, Type::NORMAL, cpu_session) { }
-
-		/**
-		 * Shortcut for 'Thread(DEFAULT_WEIGHT, name, type)'
-		 *
-		 * \noapi
-		 */
-		explicit Thread_deprecated(const char *name, Type type = NORMAL)
-		: Thread(Weight::DEFAULT_WEIGHT, name, STACK_SIZE, type) { }
-
-		/**
-		 * Shortcut for 'Thread(DEFAULT_WEIGHT, name, cpu_session)'
-		 *
-		 * \noapi
-		 */
-		explicit Thread_deprecated(const char *name, Cpu_session * cpu_session)
-		: Thread(Weight::DEFAULT_WEIGHT, name, STACK_SIZE,
-		              Type::NORMAL, cpu_session)
-		{ }
 };
 
 #endif /* _INCLUDE__BASE__THREAD_H_ */

@@ -1,5 +1,5 @@
 /*
- * \brief  Backdrop for Nitpicker
+ * \brief  Backdrop
  * \author Norman Feske
  * \date   2009-08-28
  */
@@ -15,14 +15,13 @@
 #include <base/component.h>
 #include <base/heap.h>
 #include <base/attached_rom_dataspace.h>
-#include <nitpicker_session/connection.h>
+#include <gui_session/connection.h>
 #include <util/misc_math.h>
 #include <decorator/xml_utils.h>
 #include <nitpicker_gfx/box_painter.h>
 #include <nitpicker_gfx/texture_painter.h>
 #include <base/attached_dataspace.h>
 #include <util/reconstructible.h>
-#include <os/texture_rgb565.h>
 #include <os/texture_rgb888.h>
 
 /* gems includes */
@@ -47,28 +46,23 @@ struct Backdrop::Main
 
 	Genode::Attached_rom_dataspace _config { _env, "config" };
 
-	Nitpicker::Connection _nitpicker { _env, "backdrop" };
+	Gui::Connection _gui { _env, "backdrop" };
 
 	struct Buffer
 	{
-		Nitpicker::Connection &nitpicker;
+		Gui::Connection &gui;
 
 		Framebuffer::Mode const mode;
 
 		/**
 		 * Return dataspace capability for virtual framebuffer
 		 */
-		Dataspace_capability _ds_cap(Nitpicker::Connection &nitpicker)
+		Dataspace_capability _ds_cap(Gui::Connection &gui)
 		{
 			/* setup virtual framebuffer mode */
-			nitpicker.buffer(mode, false);
+			gui.buffer(mode, false);
 
-			if (mode.format() != Framebuffer::Mode::RGB565) {
-				Genode::warning("Color mode %d not supported\n", (int)mode.format());
-				return Dataspace_capability();
-			}
-
-			return nitpicker.framebuffer()->dataspace();
+			return gui.framebuffer()->dataspace();
 		}
 
 		Attached_dataspace fb_ds;
@@ -83,19 +77,16 @@ struct Backdrop::Main
 		/**
 		 * Constructor
 		 */
-		Buffer(Genode::Env &env, Nitpicker::Connection &nitpicker, Framebuffer::Mode mode)
-		:	nitpicker(nitpicker), mode(mode),
-			fb_ds(env.rm(), _ds_cap(nitpicker)),
+		Buffer(Genode::Env &env, Gui::Connection &gui, Framebuffer::Mode mode)
+		:	gui(gui), mode(mode),
+			fb_ds(env.rm(), _ds_cap(gui)),
 			surface_ds(env.ram(), env.rm(), surface_num_bytes())
 		{ }
 
 		/**
 		 * Return size of virtual framebuffer
 		 */
-		Surface_base::Area size() const
-		{
-			return Surface_base::Area(mode.width(), mode.height());
-		}
+		Surface_base::Area size() const { return mode.area; }
 
 		/**
 		 * Return back buffer as painting surface
@@ -117,19 +108,19 @@ struct Backdrop::Main
 
 	Constructible<Buffer> _buffer { };
 
-	Nitpicker::Session::View_handle _view_handle = _nitpicker.create_view();
+	Gui::Session::View_handle _view_handle = _gui.create_view();
 
 	void _update_view()
 	{
 		/* display view behind all others */
-		typedef Nitpicker::Session::Command     Command;
-		typedef Nitpicker::Session::View_handle View_handle;
+		typedef Gui::Session::Command     Command;
+		typedef Gui::Session::View_handle View_handle;
 
-		_nitpicker.enqueue<Command::Background>(_view_handle);
-		Nitpicker::Rect rect(Nitpicker::Point(), _buffer->size());
-		_nitpicker.enqueue<Command::Geometry>(_view_handle, rect);
-		_nitpicker.enqueue<Command::To_back>(_view_handle, View_handle());
-		_nitpicker.execute();
+		_gui.enqueue<Command::Background>(_view_handle);
+		Gui::Rect rect(Gui::Point(), _buffer->size());
+		_gui.enqueue<Command::Geometry>(_view_handle, rect);
+		_gui.enqueue<Command::To_back>(_view_handle, View_handle());
+		_gui.execute();
 	}
 
 	/**
@@ -156,7 +147,7 @@ struct Backdrop::Main
 
 	Main(Genode::Env &env) : _env(env)
 	{
-		_nitpicker.mode_sigh(_config_handler);
+		_gui.mode_sigh(_config_handler);
 
 		_config.sigh(_config_handler);
 
@@ -251,13 +242,12 @@ void Backdrop::Main::_apply_image(Xml_node operation)
 	Png_image png_image(_env.ram(), _env.rm(), _heap, file.data<void>());
 
 	Area const scaled_size = calc_scaled_size(operation, png_image.size(),
-	                                          Area(_buffer->mode.width(),
-	                                               _buffer->mode.height()));
+	                                          _buffer->mode.area);
 	/*
 	 * Determine parameters of graphics operation
 	 */
-	int const h_gap = (int)_buffer->mode.width()  - scaled_size.w(),
-	          v_gap = (int)_buffer->mode.height() - scaled_size.h();
+	int const h_gap = (int)_buffer->mode.area.w() - scaled_size.w(),
+	          v_gap = (int)_buffer->mode.area.h() - scaled_size.h();
 
 	int const anchored_xpos = anchor.horizontal == Anchor::LOW    ? 0
 	                        : anchor.horizontal == Anchor::CENTER ? h_gap/2
@@ -291,7 +281,7 @@ void Backdrop::Main::_apply_image(Xml_node operation)
 	 */
 
 	/* create texture with down-sampled scaled image */
-	typedef Pixel_rgb565 PT;
+	typedef Pixel_rgb888 PT;
 	Chunky_texture<PT> texture(_env.ram(), _env.rm(), scaled_size);
 	convert_pixel_format(scaled_texture, texture, alpha, _heap);
 
@@ -309,7 +299,7 @@ void Backdrop::Main::_apply_fill(Xml_node operation)
 	 */
 
 	/* create texture with down-sampled scaled image */
-	typedef Pixel_rgb565 PT;
+	typedef Pixel_rgb888 PT;
 
 	Color const color = operation.attribute_value("color", Color(0, 0, 0));
 
@@ -324,13 +314,12 @@ void Backdrop::Main::_handle_config()
 {
 	_config.update();
 
-	Framebuffer::Mode const phys_mode = _nitpicker.mode();
+	Framebuffer::Mode const phys_mode = _gui.mode();
 	Framebuffer::Mode const
-		mode(_config.xml().attribute_value("width",  (unsigned)phys_mode.width()),
-		     _config.xml().attribute_value("height", (unsigned)phys_mode.height()),
-		     phys_mode.format());
+		mode { .area = { _config.xml().attribute_value("width",  phys_mode.area.w()),
+		                 _config.xml().attribute_value("height", phys_mode.area.h()) } };
 
-	_buffer.construct(_env, _nitpicker, mode);
+	_buffer.construct(_env, _gui, mode);
 
 	/* clear surface */
 	_apply_fill(Xml_node("<fill color=\"#000000\"/>"));
@@ -353,7 +342,7 @@ void Backdrop::Main::_handle_config()
 	});
 
 	/* schedule buffer refresh */
-	_nitpicker.framebuffer()->sync_sigh(_sync_handler);
+	_gui.framebuffer()->sync_sigh(_sync_handler);
 }
 
 
@@ -365,7 +354,7 @@ void Backdrop::Main::_handle_sync()
 	});
 
 	/* disable sync signal until the next call of 'handle_config' */
-	_nitpicker.framebuffer()->sync_sigh(Signal_context_capability());
+	_gui.framebuffer()->sync_sigh(Signal_context_capability());
 }
 
 

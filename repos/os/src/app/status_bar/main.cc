@@ -16,8 +16,8 @@
 #include <util/color.h>
 #include <base/component.h>
 #include <base/attached_rom_dataspace.h>
-#include <os/pixel_rgb565.h>
-#include <nitpicker_session/connection.h>
+#include <os/pixel_rgb888.h>
+#include <gui_session/connection.h>
 #include <nitpicker_gfx/box_painter.h>
 #include <nitpicker_gfx/tff_font.h>
 
@@ -42,21 +42,21 @@ struct Status_bar::Buffer
 {
 	enum { HEIGHT = 18, LABEL_GAP = 15 };
 
-	Nitpicker::Connection &_nitpicker;
+	Gui::Connection &_gui;
 
-	Framebuffer::Mode const _nit_mode { _nitpicker.mode() };
+	Framebuffer::Mode const _nit_mode { _gui.mode() };
 
 	/*
 	 * Dimension nitpicker buffer depending on nitpicker's screen size.
 	 * The status bar is as wide as nitpicker's screen and has a fixed
 	 * height.
 	 */
-	Framebuffer::Mode const _mode { _nit_mode.width(), HEIGHT, _nit_mode.format() };
+	Framebuffer::Mode const _mode { .area = { _nit_mode.area.w(), HEIGHT } };
 
 	Dataspace_capability _init_buffer()
 	{
-		_nitpicker.buffer(_mode, false);
-		return _nitpicker.framebuffer()->dataspace();
+		_gui.buffer(_mode, false);
+		return _gui.framebuffer()->dataspace();
 	}
 
 	Attached_dataspace _fb_ds;
@@ -64,9 +64,9 @@ struct Status_bar::Buffer
 	Tff_font::Static_glyph_buffer<4096> _glyph_buffer { };
 	Tff_font _font { &_binary_default_tff_start, _glyph_buffer };
 
-	Buffer(Region_map &rm, Nitpicker::Connection &nitpicker)
+	Buffer(Region_map &rm, Gui::Connection &gui)
 	:
-		_nitpicker(nitpicker), _fb_ds(rm, _init_buffer())
+		_gui(gui), _fb_ds(rm, _init_buffer())
 	{ }
 
 	template <typename PT>
@@ -120,14 +120,9 @@ void Status_bar::Buffer::draw(Domain_name const &domain_name,
                               Label       const &label,
                               Color              color)
 {
-	if (_mode.format() != Framebuffer::Mode::RGB565) {
-		error("pixel format not supported");
-		return;
-	}
+	typedef Pixel_rgb888 PT;
 
-	typedef Pixel_rgb565 PT;
-
-	Area const area(_mode.width(), _mode.height());
+	Area const area = _mode.area;
 
 	Surface<PT> surface(_fb_ds.local_addr<PT>(), area);
 
@@ -162,7 +157,7 @@ void Status_bar::Buffer::draw(Domain_name const &domain_name,
 	_draw_label(surface, view_rect.center(_label_size(domain_name, label)),
 	            domain_name, label, color);
 
-	_nitpicker.framebuffer()->refresh(0, 0, area.w(), area.h());
+	_gui.framebuffer()->refresh(0, 0, area.w(), area.h());
 }
 
 
@@ -182,16 +177,16 @@ struct Status_bar::Main
 	Signal_handler<Main> _mode_handler {
 		_env.ep(), *this, &Main::_handle_mode };
 
-	Nitpicker::Connection _nitpicker { _env, "status_bar" };
+	Gui::Connection _gui { _env, "status_bar" };
 
 	/* status-bar attributes */
 	Domain_name _domain_name { };
 	Label       _label       { };
 	Color       _color       { };
 
-	Reconstructible<Buffer> _buffer { _env.rm(), _nitpicker };
+	Reconstructible<Buffer> _buffer { _env.rm(), _gui };
 
-	Nitpicker::Session::View_handle const _view { _nitpicker.create_view() };
+	Gui::Session::View_handle const _view { _gui.create_view() };
 
 	void _draw_status_bar()
 	{
@@ -202,11 +197,11 @@ struct Status_bar::Main
 	{
 		/* register signal handlers */
 		_focus_ds.sigh(_focus_handler);
-		_nitpicker.mode_sigh(_mode_handler);
+		_gui.mode_sigh(_mode_handler);
 
 		/* schedule initial view-stacking command, needed only once */
-		typedef Nitpicker::Session::View_handle View_handle;
-		_nitpicker.enqueue<Nitpicker::Session::Command::To_front>(_view, View_handle());
+		typedef Gui::Session::View_handle View_handle;
+		_gui.enqueue<Gui::Session::Command::To_front>(_view, View_handle());
 
 		/* import initial state */
 		_handle_mode();
@@ -244,15 +239,14 @@ void Status_bar::Main::_handle_focus()
 
 void Status_bar::Main::_handle_mode()
 {
-	_buffer.construct(_env.rm(), _nitpicker);
+	_buffer.construct(_env.rm(), _gui);
 
 	_draw_status_bar();
 
-	Rect const geometry(Point(0, 0), Area(_buffer->mode().width(),
-	                                      _buffer->mode().height()));
+	Rect const geometry(Point(0, 0), _buffer->mode().area);
 
-	_nitpicker.enqueue<Nitpicker::Session::Command::Geometry>(_view, geometry);
-	_nitpicker.execute();
+	_gui.enqueue<Gui::Session::Command::Geometry>(_view, geometry);
+	_gui.execute();
 }
 
 

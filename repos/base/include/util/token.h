@@ -85,7 +85,7 @@ class Genode::Token
 		 * Return token as null-terminated string
 		 */
 		void string(char *dst, size_t max_len) const {
-			strncpy(dst, start(), min(len() + 1, max_len)); }
+			copy_cstring(dst, start(), min(len() + 1, max_len)); }
 
 		/**
 		 * Return true if token is valid
@@ -179,15 +179,19 @@ class Genode::Token
 
 		size_t _quoted_string_len(size_t max_len) const
 		{
+			/*
+			 * The 'end_of_quote' function examines two 'char' values.
+			 * Hence, the upper bound of the index is max_len - 2.
+			 */
 			unsigned i = 0;
-
-			for (; !end_of_quote(&_start[i]) && i < max_len; i++)
+			for (; i + 1 < max_len && !end_of_quote(&_start[i]); i++)
 
 				/* string ends without final quotation mark? too bad! */
 				if (!_start[i]) return 0;
 
 			/* exceeded maximum token length */
-			if (i == max_len) return 0;
+			if (i + 1 == max_len)
+				return 0;
 
 			/*
 			 * We stopped our search at the character before the
@@ -234,7 +238,7 @@ class Genode::Token
 			case WHITESPACE:
 				{
 					unsigned i = 0;
-					for (; is_whitespace(_start[i]) && i < max_len; i++);
+					for (; i < max_len && is_whitespace(_start[i]); i++);
 					return i;
 				}
 

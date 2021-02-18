@@ -33,12 +33,15 @@ namespace Libc {
 	struct Monitor;
 	struct Select;
 	struct Current_time;
+	struct Current_real_time;
 	struct Clone_connection;
-	struct Kernel_routine_scheduler;
 	struct Watch;
 	struct Signal;
 	struct File_descriptor_allocator;
 	struct Timer_accessor;
+	struct Cwd;
+	struct Atexit;
+	struct Config_accessor;
 
 	/**
 	 * Support for shared libraries
@@ -63,12 +66,13 @@ namespace Libc {
 	/**
 	 * Virtual file system
 	 */
-	void init_vfs_plugin(Suspend &);
+	void init_vfs_plugin(Monitor &, Genode::Region_map &);
+	void init_file_operations(Cwd &, Config_accessor const &);
 
 	/**
 	 * Select support
 	 */
-	void init_select(Suspend &, Resume &, Select &, Signal &);
+	void init_select(Select &, Signal &, Monitor &);
 
 	/**
 	 * Support for querying available RAM quota in sysctl functions
@@ -97,18 +101,19 @@ namespace Libc {
 	/**
 	 * Init timing facilities
 	 */
-	void init_sleep(Suspend &);
-	void init_time(Current_time &, Rtc_path const &, Watch &);
+	void init_sleep(Monitor &);
+	void init_time(Current_time &, Current_real_time &);
 
 	/**
 	 * Socket fs
 	 */
-	void init_socket_fs(Suspend &);
+	void init_socket_fs(Suspend &, Monitor &);
 
 	/**
 	 * Pthread/semaphore support
 	 */
-	void init_pthread_support(Suspend &, Resume &, Timer_accessor &);
+	void init_pthread_support(Monitor &, Timer_accessor &);
+	void init_pthread_support(Genode::Cpu_session &, Xml_node);
 	void init_semaphore_support(Timer_accessor &);
 
 	struct Config_accessor : Interface
@@ -121,8 +126,7 @@ namespace Libc {
 	 */
 	void init_fork(Genode::Env &, Config_accessor const &,
 	               Genode::Allocator &heap, Heap &malloc_heap, int pid,
-	               Suspend &, Resume &, Signal &, Kernel_routine_scheduler &,
-	               Binary_name const &);
+	               Monitor &, Signal &, Binary_name const &);
 
 	struct Reset_malloc_heap : Interface
 	{
@@ -140,6 +144,11 @@ namespace Libc {
 	 * Signal handling
 	 */
 	void init_signal(Signal &);
+
+	/**
+	 * Atexit handling
+	 */
+	void init_atexit(Atexit &);
 }
 
 #endif /* _LIBC__INTERNAL__INIT_H_ */

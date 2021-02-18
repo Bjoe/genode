@@ -793,7 +793,7 @@ class Lwip::Udp_socket_dir final :
 			private:
 
 				u16_t  offset = 0;
-				pbuf  *buf;
+				pbuf * const buf;
 
 			public:
 
@@ -857,6 +857,10 @@ class Lwip::Udp_socket_dir final :
 
 		virtual ~Udp_socket_dir()
 		{
+			_packet_queue.dequeue_all([&] (Packet &pkt) {
+				destroy(_packet_slab, &pkt);
+			});
+
 			udp_remove(_pcb);
 			_pcb = NULL;
 
@@ -902,7 +906,7 @@ class Lwip::Udp_socket_dir final :
 		                 char *dst, file_size count,
 		                 file_size &out_count) override
 		{
-			Genode::Lock::Guard g { Lwip::lock() };
+			Genode::Mutex::Guard guard { Lwip::mutex() };
 			Read_result result = Read_result::READ_ERR_INVALID;
 
 			switch(handle.kind) {
@@ -988,9 +992,9 @@ class Lwip::Udp_socket_dir final :
 		                   char const *src, file_size count,
 		                   file_size &out_count) override
 		{
-			Genode::Lock::Guard g { Lwip::lock() };
+			Genode::Mutex::Guard guard { Lwip::mutex() };
 
-			switch(handle.kind) {
+			switch (handle.kind) {
 
 			case Lwip_file_handle::DATA: {
 				if (ip_addr_isany(&_to_addr)) break;
@@ -1016,7 +1020,7 @@ class Lwip::Udp_socket_dir final :
 					return Write_result::WRITE_ERR_INVALID;
 				} else {
 					char buf[ENDPOINT_STRLEN_MAX];
-					Genode::strncpy(buf, src, min(count+1, sizeof(buf)));
+					copy_cstring(buf, src, min(count+1, sizeof(buf)));
 
 					_to_port = remove_port(buf);
 					out_count = count;
@@ -1034,7 +1038,7 @@ class Lwip::Udp_socket_dir final :
 					ip_addr_t addr;
 					u16_t port;
 
-					Genode::strncpy(buf, src, min(count+1, sizeof(buf)));
+					copy_cstring(buf, src, min(count+1, sizeof(buf)));
 					port = remove_port(buf);
 					if (!ipaddr_aton(buf, &addr))
 						break;
@@ -1053,7 +1057,7 @@ class Lwip::Udp_socket_dir final :
 				if (count < ENDPOINT_STRLEN_MAX) {
 					char buf[ENDPOINT_STRLEN_MAX];
 
-					Genode::strncpy(buf, src, min(count+1, sizeof(buf)));
+					copy_cstring(buf, src, min(count+1, sizeof(buf)));
 
 					_to_port = remove_port(buf);
 					if (!ipaddr_aton(buf, &_to_addr))
@@ -1152,9 +1156,16 @@ class Lwip::Tcp_socket_dir final :
 
 		~Tcp_socket_dir()
 		{
+			if (_recv_pbuf) {
+				pbuf_free(_recv_pbuf);
+				_recv_pbuf = nullptr;
+			}
+
 			tcp_arg(_pcb, NULL);
 
 			for (Pcb_pending *p = _pcb_pending.first(); p; p->next()) {
+				if (p->buf)
+					pbuf_free(p->buf);
 				destroy(alloc, p);
 			}
 
@@ -1291,13 +1302,19 @@ class Lwip::Tcp_socket_dir final :
 		                 char *dst, file_size count,
 		                 file_size &out_count) override
 		{
-			Genode::Lock::Guard g { Lwip::lock() };
+			Genode::Mutex::Guard g { Lwip::mutex() };
 
-			switch(handle.kind) {
+			switch (handle.kind) {
 
 			case Lwip_file_handle::DATA:
 				{
 					if (_recv_pbuf == nullptr) {
+						if (!_pcb || _pcb->state == CLOSE_WAIT) {
+							shutdown();
+							out_count = 0;
+							return Read_result::READ_OK;
+						}
+
 						/*
 						 * queue the read if the PCB is active and
 						 * there is nothing to read, otherwise return
@@ -1356,7 +1373,8 @@ class Lwip::Tcp_socket_dir final :
 					out_count = Genode::snprintf(dst, count, "%s:%d\n",
 					                             ip_str, _pcb->remote_port);
 					return Read_result::READ_OK;
-				} else if (state == CLOSED) {
+				} else {
+					out_count = 0;
 					return Read_result::READ_OK;
 				}
 				break;
@@ -1373,13 +1391,14 @@ class Lwip::Tcp_socket_dir final :
 					tcp_backlog_accepted(pp->pcb);
 
 					_pcb_pending.remove(pp);
+					pp->buf = nullptr;
 					destroy(alloc, pp);
 
 					handle.kind = Lwip_file_handle::LOCATION;
 					/* read the location of the new socket directory */
-					Lwip::lock().unlock();
+					Lwip::mutex().release();
 					Read_result result = handle.read(dst, count, out_count);
-					Lwip::lock().lock();
+					Lwip::mutex().acquire();
 
 					return result;
 				}
@@ -1443,13 +1462,13 @@ class Lwip::Tcp_socket_dir final :
 		                   char const *src, file_size count,
 		                   file_size &out_count) override
 		{
-			Genode::Lock::Guard g { Lwip::lock() };
+			Genode::Mutex::Guard guard { Lwip::mutex() };
 			if (_pcb == NULL) {
 				/* socket is closed */
 				return Write_result::WRITE_ERR_IO;
 			}
 
-			switch(handle.kind) {
+			switch (handle.kind) {
 			case Lwip_file_handle::DATA:
 				if (state == READY) {
 					Write_result res = Write_result::WRITE_ERR_WOULD_BLOCK;
@@ -1490,7 +1509,7 @@ class Lwip::Tcp_socket_dir final :
 					ip_addr_t addr;
 					u16_t port = 0;
 
-					Genode::strncpy(buf, src, min(count+1, sizeof(buf)));
+					Genode::copy_cstring(buf, src, min(count+1, sizeof(buf)));
 
 					port = remove_port(buf);
 					if (!ipaddr_aton(buf, &addr))
@@ -1511,7 +1530,7 @@ class Lwip::Tcp_socket_dir final :
 					ip_addr_t addr;
 					u16_t port = 0;
 
-					Genode::strncpy(buf, src, min(count+1, sizeof(buf)));
+					copy_cstring(buf, src, min(count+1, sizeof(buf)));
 					port = remove_port(buf);
 					if (!ipaddr_aton(buf, &addr))
 						break;
@@ -1532,7 +1551,7 @@ class Lwip::Tcp_socket_dir final :
 					unsigned long backlog = TCP_DEFAULT_LISTEN_BACKLOG;
 					char buf[8];
 
-					Genode::strncpy(buf, src, min(count+1, sizeof(buf)));
+					copy_cstring(buf, src, min(count+1, sizeof(buf)));
 					Genode::ascii_to_unsigned(buf, backlog, 10);
 
 					/* this replaces the PCB so set the callbacks again */
@@ -1636,10 +1655,13 @@ err_t tcp_delayed_recv_callback(void *arg, struct tcp_pcb *pcb, struct pbuf *buf
 	Lwip::Tcp_socket_dir::Pcb_pending *pending =
 		static_cast<Lwip::Tcp_socket_dir::Pcb_pending *>(arg);
 
-	if (pending->buf && buf) {
-		pbuf_cat(pending->buf, buf);
-	} else {
-		pending->buf = buf;
+	/* XXX buf == nullptr means ENOTCONN */
+	if (buf) {
+		if (pending->buf) {
+			pbuf_cat(pending->buf, buf);
+		} else {
+			pending->buf = buf;
+		}
 	}
 
 	return ERR_OK;
@@ -1701,7 +1723,8 @@ class Lwip::File_system final : public Vfs::File_system, public Lwip::Directory
 			typedef Genode::Fifo_element<Vfs_handle> Handle_element;
 			typedef Genode::Fifo<Vfs_netif::Handle_element> Handle_queue;
 
-			Handle_queue blocked_handles { };
+			Handle_queue  blocked_handles { };
+			Genode::Mutex blocked_handles_mutex { };
 
 			Vfs_netif(Vfs::Env &vfs_env,
 			          Genode::Xml_node config)
@@ -1719,6 +1742,9 @@ class Lwip::File_system final : public Vfs::File_system, public Lwip::Directory
 			{
 				Handle_element *elem = new (handle.alloc())
 					Handle_element(handle);
+
+				Genode::Mutex::Guard guard(blocked_handles_mutex);
+
 				blocked_handles.enqueue(*elem);
 			}
 
@@ -1733,6 +1759,8 @@ class Lwip::File_system final : public Vfs::File_system, public Lwip::Directory
 				nameserver_handles.for_each([&] (Lwip_nameserver_handle &h) {
 					h.io_progress_response(); });
 
+				Genode::Mutex::Guard guard(blocked_handles_mutex);
+
 				blocked_handles.dequeue_all([] (Handle_element &elem) {
 					Vfs_handle &handle = elem.object();
 					destroy(elem.object().alloc(), &elem);
@@ -1742,6 +1770,8 @@ class Lwip::File_system final : public Vfs::File_system, public Lwip::Directory
 
 			void drop(Vfs_handle &handle)
 			{
+				Genode::Mutex::Guard guard(blocked_handles_mutex);
+
 				blocked_handles.for_each([&] (Handle_element &elem) {
 					if (&elem.object() == &handle) {
 						blocked_handles.remove(elem);
@@ -2002,6 +2032,7 @@ class Lwip::File_system final : public Vfs::File_system, public Lwip::Directory
 			if (_netif.ready()) return true;
 
 			/* handle must be woken when the interface comes up */
+			Genode::warning("read blocked until lwIP interface is ready");
 			_netif.enqueue(*vfs_handle);
 			return false;
 		}

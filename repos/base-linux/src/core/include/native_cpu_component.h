@@ -20,13 +20,12 @@
 #include <linux_native_cpu/linux_native_cpu.h>
 
 namespace Genode {
-
 	class Cpu_session_component;
 	class Native_cpu_component;
 }
 
 
-class Genode::Native_cpu_component : public Rpc_object<Linux_native_cpu,
+class Genode::Native_cpu_component : public Rpc_object<Cpu_session::Native_cpu,
                                                        Native_cpu_component>
 {
 	private:
@@ -37,11 +36,10 @@ class Genode::Native_cpu_component : public Rpc_object<Linux_native_cpu,
 	public:
 
 		Native_cpu_component(Cpu_session_component &, char const *);
+
 		~Native_cpu_component();
 
 		void thread_id(Thread_capability, int, int) override;
-		Untyped_capability server_sd(Thread_capability) override;
-		Untyped_capability client_sd(Thread_capability) override;
 };
 
 #endif /* _CORE__INCLUDE__NATIVE_CPU_COMPONENT_H_ */

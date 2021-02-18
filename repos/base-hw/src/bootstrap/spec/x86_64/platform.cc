@@ -246,13 +246,6 @@ struct Lapic : Mmio
 	Lapic(addr_t const addr) : Mmio(addr) { }
 };
 
-static inline Genode::uint64_t rdtsc()
-{
-	Genode::uint32_t lo, hi;
-	asm volatile("rdtsc" : "=a" (lo), "=d" (hi));
-	return (Genode::uint64_t)hi << 32 | lo;
-}
-
 static inline void ipi_to_all(Lapic &lapic, unsigned const boot_frame,
                               Lapic::Icr_low::Delivery_mode::Mode const mode)
 {
@@ -278,6 +271,16 @@ static inline void ipi_to_all(Lapic &lapic, unsigned const boot_frame,
 unsigned Bootstrap::Platform::enable_mmu()
 {
 	using ::Board::Cpu;
+
+	/* enable PAT if available */
+	Cpu::Cpuid_1_edx::access_t cpuid1 = Cpu::Cpuid_1_edx::read();
+	if (Cpu::Cpuid_1_edx::Pat::get(cpuid1)) {
+		Cpu::IA32_pat::access_t pat = Cpu::IA32_pat::read();
+		if (Cpu::IA32_pat::Pa1::get(pat) != Cpu::IA32_pat::Pa1::WRITE_COMBINING) {
+			Cpu::IA32_pat::Pa1::set(pat, Cpu::IA32_pat::Pa1::WRITE_COMBINING);
+			Cpu::IA32_pat::write(pat);
+		}
+	}
 
 	Cpu::Cr3::write(Cpu::Cr3::Pdb::masked((addr_t)core_pd->table_base));
 

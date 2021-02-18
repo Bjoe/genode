@@ -17,8 +17,8 @@
 #include <base/allocator_avl.h>
 #include <base/attached_rom_dataspace.h>
 #include <base/heap.h>
-#include <input/root.h>
 #include <usb_session/connection.h>
+#include <event_session/connection.h>
 #include <lx_kit/scheduler.h>
 
 struct usb_device_id;
@@ -33,11 +33,14 @@ struct Driver
 	{
 		Lx::Task                     task;
 		Genode::Signal_handler<Task> handler;
+		bool                         handling_signal { false };
 	
 		void handle_signal()
 		{
 			task.unblock();
+			handling_signal = true;
 			Lx::scheduler().schedule();
+			handling_signal = false;
 		}
 	
 		template <typename... ARGS>
@@ -56,6 +59,7 @@ struct Driver
 		Genode::Allocator_avl         &alloc;
 		Task                           state_task;
 		Task                           urb_task;
+
 		Usb::Connection                usb { env, &alloc, label.string(),
 		                                     512 * 1024, state_task.handler };
 		usb_device                   * udev = nullptr;
@@ -70,6 +74,7 @@ struct Driver
 		void unregister_device();
 		void probe_interface(usb_interface *, usb_device_id *);
 		void remove_interface(usb_interface *);
+		bool deinit();
 	};
 
 	struct Devices : Genode::List<Device::Le>
@@ -94,11 +99,10 @@ struct Driver
 
 	Devices                         devices;
 	Genode::Env                    &env;
-	Genode::Entrypoint             &ep             { env.ep() };
-	Genode::Heap                    heap           { env.ram(), env.rm() };
-	Genode::Allocator_avl           alloc          { &heap };
-	Input::Session_component        session        { env, env.ram() };
-	Input::Root_component           root           { env.ep().rpc_ep(), session };
+	Genode::Entrypoint             &ep    { env.ep() };
+	Genode::Heap                    heap  { env.ram(), env.rm() };
+	Genode::Allocator_avl           alloc { &heap };
+	Event::Connection               event { env };
 	Genode::Constructible<Task>     main_task;
 	Genode::Constructible<Genode::Attached_rom_dataspace> report_rom;
 

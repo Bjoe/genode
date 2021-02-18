@@ -260,6 +260,28 @@ class Hw::Page_table
 				}
 
 				/**
+				 * Lookup translation
+				 *
+				 * \param virt  virtual address offset to look for
+				 * \param phys  physical address to return
+				 * \returns true if lookup was successful, otherwise false
+				 */
+				bool lookup_translation(addr_t const virt, addr_t & phys)
+				{
+					unsigned idx = 0;
+					if (!_index_by_vo(idx, virt)) return false;
+
+					switch (Descriptor::type(_entries[idx])) {
+					case Descriptor::SMALL_PAGE:
+						{
+							phys = Small_page::Pa::masked(_entries[idx]);
+							return true;
+						}
+					default: return false;
+					}
+				}
+
+				/**
 				 * Does this table solely contain invalid entries
 				 */
 				bool empty()
@@ -394,7 +416,7 @@ class Hw::Page_table
 
 		enum { MAX_INDEX = sizeof(_entries) / sizeof(_entries[0]) - 1 };
 
-		static inline void _translation_added(addr_t, size_t);
+		static inline void _table_changed(addr_t, size_t);
 
 		/**
 		 * Try to get entry index in 'i' for virtual offset 'vo!
@@ -435,7 +457,7 @@ class Hw::Page_table
 					/* create and link page table */
 					Pt & pt = alloc.construct<Pt>();
 					_entries[i] = Ptd::create(alloc.phys_addr(pt));
-					_translation_added((addr_t)&_entries[i], sizeof(Ptd));
+					_table_changed((addr_t)&_entries[i], sizeof(Ptd));
 				}
 				[[fallthrough]];
 
@@ -443,7 +465,7 @@ class Hw::Page_table
 				{
 					Pt & pt = alloc.virt_addr<Pt>(Ptd::Pa::masked(_entries[i]));
 					pt.insert_translation(vo - Section::Pa::masked(vo), pa, size, flags);
-					_translation_added((addr_t)&pt, sizeof(Page_table_level_2));
+					_table_changed((addr_t)&pt, sizeof(Page_table_level_2));
 					break;
 				}
 
@@ -510,7 +532,7 @@ class Hw::Page_table
 						_entries[i] = e;
 
 						/* some CPUs need to act on changed translations */
-						_translation_added((addr_t)&_entries[i], sizeof(Section));
+						_table_changed((addr_t)&_entries[i], sizeof(Section));
 						break;
 					}
 
@@ -558,6 +580,7 @@ class Hw::Page_table
 
 						addr_t const pt_vo = vo - Section::Pa::masked(vo);
 						pt.remove_translation(pt_vo, Genode::min(size, end-vo));
+						_table_changed((addr_t)&pt, sizeof(Page_table_level_2));
 
 						if (pt.empty()) {
 							Descriptor::invalidate(_entries[i]);
@@ -566,7 +589,12 @@ class Hw::Page_table
 						break;
 					}
 
-				default: Descriptor::invalidate(_entries[i]); }
+				default:
+					{
+						Descriptor::invalidate(_entries[i]);
+						_table_changed((addr_t)&_entries[i], sizeof(Section));
+					}
+				}
 
 				/* check whether we wrap */
 				if (end < vo) return;
@@ -575,6 +603,42 @@ class Hw::Page_table
 				size = (size > sz) ? size - sz : 0;
 				vo += sz;
 			}
+		}
+
+		/**
+		 * Lookup translation
+		 *
+		 * \param virt  virtual address to look at
+		 * \param phys  physical address to return
+		 * \param alloc second level translation table allocator
+		 * \returns true if a translation was found, otherwise false
+		 */
+		bool lookup_translation(addr_t const virt, addr_t & phys, Allocator & alloc)
+		{
+			unsigned idx = 0;
+			if (!_index_by_vo(idx, virt)) return false;
+
+			switch (Descriptor::type(_entries[idx])) {
+
+			case Descriptor::SECTION:
+				{
+					phys = Section::Pa::masked(_entries[idx]);
+					return true;
+				}
+
+			case Descriptor::PAGE_TABLE:
+				{
+					using Pt  = Page_table_level_2;
+					using Ptd = Page_table_descriptor;
+
+					Pt & pt =
+						alloc.virt_addr<Pt>(Ptd::Pa::masked(_entries[idx]));
+
+					addr_t const offset = virt - Section::Pa::masked(virt);
+					return pt.lookup_translation(offset, phys);
+				}
+			default: return false;
+			};
 		}
 } __attribute__((aligned(1<<Page_table::ALIGNM_LOG2)));
 

@@ -25,7 +25,7 @@ if {[info exists flavor_extension]} {
 }
 
 set build_components {
-	server/input_merger
+	server/event_filter
 	drivers/nic
 	drivers/audio
 	server/report_rom
@@ -33,9 +33,9 @@ set build_components {
 }
 
 set boot_modules {
-	input_merger
+	event_filter
 	ipxe_nic_drv
-	audio_drv
+	pci_audio_drv
 	report_rom
 	dynamic_rom
 }
@@ -45,24 +45,23 @@ if {$use_vbox5_nova} { set virtualbox5_binary "virtualbox5-nova" }
 
 set config_of_app {
 
-	<start name="input_merger">
+	<start name="event_filter">
 		<resource name="RAM" quantum="1M" />
 		<provides>
-			<service name="Input" />
+			<service name="Event" />
 		</provides>
-		<config>}
-append_if [expr $use_ps2] config_of_app {
-			<input label="ps2" /> }
-append_if [expr $use_usb] config_of_app {
-			<input label="usb_hid" />}
-append config_of_app {
+		<config>
+			<output>
+				<merge>
+					<input name="ps2"/>
+					<input name="usb_hid"/>
+				</merge>
+			</output>
+			<policy label="ps2" input="ps2"/>
+			<policy label="usb_hid" input="usb_hid"/>
 		</config>
-		<route> }
-append_if [expr $use_ps2] config_of_app {
-			<service name="Input" label="ps2"> <child name="ps2_drv" /> </service> }
-append_if [expr $use_usb] config_of_app {
-			<service name="Input" label="usb_hid"> <child name="usb_drv" /> </service> }
-append config_of_app {
+		<route>
+			<service name="Event"> <child name="nitpicker"/> </service>
 			<any-service> <parent /> <any-child /> </any-service>
 		</route>
 	</start>
@@ -85,6 +84,7 @@ append config_of_app {
 		(Recording is configured to use the external mic.)
 	-->
 	<start name="audio_drv" priority="-1">
+		<binary name="pci_audio_drv"/>
 		<resource name="RAM" quantum="9M"/>
 		<provides>
 			<service name="Audio_out"/>
@@ -116,13 +116,13 @@ append config_of_app {
 
 	<start name="nitpicker" priority="-1" caps="150">
 		<resource name="RAM" quantum="12M"/>
-		<provides><service name="Nitpicker"/></provides>
-		<configfile name="nitpicker.config"/>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<route>
-			<service name="Framebuffer"> <child name="fb_drv" /> </service>
-			<service name="Input"> <child name="input_merger" /> </service>
 			<service name="Report"> <child name="report_rom" /> </service>
-			<service name="ROM" label="nitpicker.config"> <child name="dynamic-config"/> </service>
+			<service name="ROM" label="config">
+				<child name="dynamic-config" label="nitpicker.config"/> </service>
 			<any-service> <parent/> <any-child /> </any-service>
 		</route>
 	</start>
@@ -132,7 +132,7 @@ append config_of_app {
 		<provides> <service name="Report"/> </provides>
 		<config shapes="yes"/>
 		<route>
-			<service name="Nitpicker"> <child name="nitpicker"/>  </service>
+			<service name="Gui"> <child name="nitpicker"/>  </service>
 			<service name="ROM" label="hover"> <child name="report_rom"/> </service>
 			<service name="ROM" label="xray"> <child name="report_rom"/> </service>
 			<any-service> <parent/> </any-service>
@@ -145,11 +145,11 @@ if { $use_vms > 1 } {
 		<resource name="RAM" quantum="32M"/>
 		<binary name="init"/>
 		<provides>
-			<service name="Nitpicker"/> <service name="Report"/> <service name="ROM"/>
+			<service name="Gui"/> <service name="Report"/> <service name="ROM"/>
 		</provides>
 		<route>
 			<service name="ROM" label="config"> <parent label="wm.config"/> </service>
-			<service name="Nitpicker"> <child name="nitpicker"/> </service>
+			<service name="Gui"> <child name="nitpicker"/> </service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>}
@@ -174,6 +174,7 @@ append config_of_app {
 			<rom name="nitpicker.config">
 				<inline description="standard_mode">
 					<config>
+						<capture/> <event/>
 						<report focus="yes" hover="yes" />
 
 						<domain name="pointer"  layer="1" content="client" label="no" origin="pointer" />
@@ -190,6 +191,7 @@ append config_of_app {
 append_if [expr !$use_rumpfs] config_of_app {
 				<inline description="shutdown">
 					<config>
+						<capture/> <event/>
 						<report focus="yes" hover="yes" />
 
 						<domain name="pointer"  layer="1" content="client" label="no" origin="pointer" />
@@ -229,15 +231,18 @@ for { set i 1} { $i <= $use_vms } { incr i} {
 		<config ld_verbose=\"yes\" vbox_file=\"${vbox_file}\" vm_name=\"${flavor}\" xhci=\"no\" capslock=\"NOROM\">"
 	}
 	append config_of_app {
-			<libc stdout="/dev/log" stderr="/dev/log" rtc="/dev/rtc"/>
+			<libc stdout="/dev/log" stderr="/dev/log" rtc="/dev/rtc" pipe="/pipe"/>
 			<vfs>
 				<dir name="dev">
 					<log/> <rtc/>}
 
+	append_if [expr $use_serial] config_of_app { <terminal/> }
+
 	append_if [expr !$use_rumpfs] config_of_app {
 					<block name="sda3" label="raw" block_buffer_count="128" />}
 	append config_of_app {
-				</dir>}
+				</dir>
+				<dir name="pipe"> <pipe/> </dir>}
 
 	append_if [expr $use_ram_fs] config_of_app {
 				<dir name="ram">  <fs label="from_ram_fs"/> </dir>}
@@ -256,7 +261,7 @@ for { set i 1} { $i <= $use_vms } { incr i} {
 		<route>}
 
 	append_if [expr ($use_vms > 1)] config_of_app {
-			<service name="Nitpicker"> <child name="wm"/></service>}
+			<service name="Gui"> <child name="wm"/> </service>}
 
 	append_if [expr $use_ram_fs] config_of_app {
 			<service name="File_system" label="from_ram_fs"> <child name="ram_fs"/> </service>}
@@ -280,6 +285,10 @@ source ${genode_dir}/repos/ports/run/virtualbox_auto.inc
 # copy vbox configuration to bin directory
 exec cp ${genode_dir}/repos/ports/run/${vbox_file} bin/.
 
+if {[info exists use_vcpus]} {
+	exec sed -i "s/CPU count=\".*\"/CPU count=\"${use_vcpus}\"/g" bin/${vbox_file}
+}
+
 if {!$use_rumpfs} {
 	exec cp ${genode_dir}/repos/ports/run/${raw_image} bin/.
 }
@@ -292,27 +301,33 @@ build_boot_image $boot_modules
 set wait_timeout 70
 if {[have_spec foc]} { set wait_timeout 120 }
 
-run_genode_until {\[init -\> vbox.*].*Guest Additions capability report:.*seamless: no, hostWindowMapping: no, graphics: no} $wait_timeout
-
-# run_genode_until forever 0 [output_spawn_id]
-
-if {$use_rumpfs} {
-	set wait_timeout 170
-	for { set i 1 } { $i <= $use_vms } { incr i } {
-		if { [string match "ubuntu*" $flavor] || [string match "win10*" $flavor] } {
-			run_genode_until {\[init -\> vbox.*].*Guest Additions capability report:.*seamless: yes, hostWindowMapping: no, graphics: no} $wait_timeout [output_spawn_id]
-		} else {
-			run_genode_until {\[init -\> vbox.*].*Guest Additions capability report:.*seamless: yes, hostWindowMapping: no, graphics: yes} $wait_timeout [output_spawn_id]
-		}
-	}
-} else {
-	run_genode_until {\[init\] child "vbox1" exited with exit value 0} 60 [output_spawn_id]
-	# give block driver bit time to write data to disk
-	sleep 5
+if {![info exists use_check_result]} {
+	set use_check_result 0
 }
 
-# cleanup bin directory - remove vbox file
-exec rm bin/${vbox_file}
-if {!$use_rumpfs} {
-	exec rm bin/${raw_image}
+if {$use_check_result} {
+	run_genode_until {\[init -\> vbox.*].*Guest Additions capability report:.*seamless: no, hostWindowMapping: no, graphics: no} $wait_timeout
+
+	# run_genode_until forever 0 [output_spawn_id]
+
+	if {$use_rumpfs} {
+		set wait_timeout 170
+		for { set i 1 } { $i <= $use_vms } { incr i } {
+			if { [string match "ubuntu*" $flavor] || [string match "win10*" $flavor] } {
+				run_genode_until {\[init -\> vbox.*].*Guest Additions capability report:.*seamless: yes, hostWindowMapping: no, graphics: no} $wait_timeout [output_spawn_id]
+			} else {
+				run_genode_until {\[init -\> vbox.*].*Guest Additions capability report:.*seamless: yes, hostWindowMapping: no, graphics: yes} $wait_timeout [output_spawn_id]
+			}
+		}
+	} else {
+		run_genode_until {\[init\] child "vbox1" exited with exit value 0} 60 [output_spawn_id]
+		# give block driver bit time to write data to disk
+		sleep 5
+	}
+
+	# cleanup bin directory - remove vbox file
+	exec rm bin/${vbox_file}
+	if {!$use_rumpfs} {
+		exec rm bin/${raw_image}
+	}
 }

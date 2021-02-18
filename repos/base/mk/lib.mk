@@ -95,6 +95,7 @@ endif
 #
 ifneq ($(SYMBOLS),)
 ABI_SO := $(addsuffix .abi.so,$(LIB))
+ABI_SONAME := $(addsuffix .lib.so,$(LIB))
 
 $(LIB).symbols:
 	$(VERBOSE)ln -sf $(SYMBOLS) $@
@@ -168,28 +169,6 @@ $(LIB_TAG): $(LIB_A) $(LIB_SO) $(LIB_CHECKED) $(ABI_SO) $(INSTALL_SO) $(DEBUG_SO
 	@touch $@
 
 #
-# Rust support
-#
-# For a rust library, we create both an actual library (lib.a or lib.so) that
-# is used for linking the final binary, and an rlib file that is required for
-# compiling rust source codes that use the library. As the rlib is created from
-# the file specified at 'SRC_RS' via the pattern rule '%.rlib: %.rs', its name
-# corresponds to the source file, not the library name. To enable rustc to find
-# the library when compiling dependent compilation units, we create an
-# appropriately named symlink that points to the rlib file.
-#
-ifneq ($(SRC_RS),)
-ifneq ($(words $(SRC_RS)),1)
-$(error 'SRC_RC' of library $(LIB) has more than one element: $(SRC_RC))
-endif
-$(LIB_A): $(LIB).rlib
-endif
-
-.PRECIOUS: $(SRC_RC:.rs=.rlib)
-$(LIB).rlib: $(SRC_RS:.rs=.rlib)
-	$(VERBOSE)ln -s $< $@
-
-#
 # Rule to build the <libname>.lib.a file
 #
 # Use $(OBJECTS) instead of $^ for specifying the list of objects to include
@@ -203,10 +182,11 @@ $(LIB_A): $(OBJECTS)
 	$(VERBOSE)$(AR) -rcs $@ $(OBJECTS)
 
 #
-# Link ldso-startup library to each shared library
+# Link ldso-support library to each shared library to provide local hook
+# functions for constructors and ARM
 #
 ifdef SHARED_LIB
-override ARCHIVES += ldso-startup.lib.a
+override ARCHIVES += ldso_so_support.lib.a
 endif
 
 #
@@ -230,10 +210,6 @@ STATIC_LIBS_BRIEF := $(subst $(LIB_CACHE_DIR),$$libs,$(STATIC_LIBS))
 # (LIB_SO_DEPS) to the library to store the library-dependency information in
 # the generated shared object.
 #
-# The 'ldso-startup/startup.o' object file, which contains the support code for
-# constructing static objects must be specified as object file to prevent the
-# linker from garbage-collecting it.
-#
 
 #
 # Default entry point of shared libraries
@@ -253,14 +229,14 @@ $(LIB_SO): $(STATIC_LIBS) $(OBJECTS) $(wildcard $(LD_SCRIPT_SO)) $(LIB_SO_DEPS)
 
 $(ABI_SO): $(LIB).symbols.o
 	$(MSG_MERGE)$(ABI_SO)
-	$(VERBOSE)$(LD) -o $(ABI_SO) -shared --eh-frame-hdr $(LD_OPT) \
+	$(VERBOSE)$(LD) -o $(ABI_SO) -soname=$(ABI_SONAME) -shared --eh-frame-hdr $(LD_OPT) \
 	                -T $(LD_SCRIPT_SO) \
 	                --whole-archive --start-group \
 	                $(LIB_SO_DEPS) $< \
 	                --end-group --no-whole-archive
 
-$(LIB_CHECKED): $(LIB_SO)
-	$(VERBOSE)$(BASE_DIR)/../../tool/check_abi $(LIB_SO) $(SYMBOLS)
+$(LIB_CHECKED): $(LIB_SO) $(SYMBOLS)
+	$(VERBOSE)$(BASE_DIR)/../../tool/check_abi $(LIB_SO) $(SYMBOLS) && touch $@
 
 $(LIB_SO).stripped: $(LIB_SO)
 	$(VERBOSE)$(STRIP) -o $@ $<

@@ -26,17 +26,16 @@ append config {
 	</default-route>
 	<default caps="100"/>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
-		<provides>
-			<service name="Input"/> <service name="Framebuffer"/>
-		</provides>
 	</start>
 
 	<start name="timer">
@@ -46,8 +45,12 @@ append config {
 
 	<start name="nitpicker">
 		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<config>
+			<capture/> <event/>
+
 			<domain name="default" layer="2" content="client" label="no"/>
 			<domain name="nano3d"  layer="1" content="client" label="no" origin="pointer"/>
 
@@ -69,7 +72,7 @@ append config {
 			<image png="genode_logo.png" anchor="bottom_right" alpha="150"/>
 		</config>
 		<route>
-			<service name="Nitpicker"> <child name="nitpicker" label="backdrop" /> </service>
+			<service name="Gui"> <child name="nitpicker" label="backdrop" /> </service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
@@ -101,10 +104,9 @@ append config {
 
 	<start name="nano3d">
 		<resource name="RAM" quantum="8M"/>
-		<configfile name="nano3d.config"/>
 		<route>
-			<service name="ROM" label="nano3d.config">
-				<child name="dynamic_rom" /> </service>
+			<service name="ROM" label="config">
+				<child name="dynamic_rom" label="nano3d.config"/> </service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>

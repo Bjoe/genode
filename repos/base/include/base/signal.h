@@ -88,7 +88,12 @@ class Genode::Signal
 			 */
 			Data() : context(0), num(0) { }
 
-		} _data;
+		} _data { };
+
+		/**
+		 * Constructor for invalid signal
+		 */
+		Signal() { };
 
 		/**
 		 * Constructor
@@ -117,6 +122,7 @@ class Genode::Signal
 
 		Signal_context *context()       { return _data.context; }
 		unsigned        num()     const { return _data.num; }
+		bool            valid()   const { return _data.context != nullptr; }
 };
 
 
@@ -208,11 +214,11 @@ class Genode::Signal_context : Interface, Noncopyable
 		 */
 		Signal_receiver *_receiver { nullptr };
 
-		Lock         _lock          { };   /* protect '_curr_signal' */
+		Mutex        _mutex         { };   /* protect '_curr_signal' */
 		Signal::Data _curr_signal   { };   /* most-currently received signal */
 		bool         _pending { false };   /* current signal is valid */
 		unsigned int _ref_cnt     { 0 };   /* number of references to context */
-		Lock         _destroy_lock  { };   /* prevent destruction while the
+		Mutex        _destroy_mutex { };   /* prevent destruction while the
 		                                      context is in use */
 
 		/**
@@ -253,6 +259,8 @@ class Genode::Signal_context : Interface, Noncopyable
 		Level level() const { return _level; }
 
 		List_element<Signal_context> *deferred_le() { return &_deferred_le; }
+
+		void local_submit();
 
 		/*
 		 * Signal contexts are never invoked but only used as arguments for
@@ -298,10 +306,8 @@ class Genode::Signal_receiver : Noncopyable
 					if (!context) return;
 
 					do {
-						Lock::Guard lock_guard(context->_lock);
-						try {
-							functor(*context);
-						} catch (Break_for_each) { return; }
+						Mutex::Guard mutex_guard(context->_mutex);
+						if (functor(*context)) return;
 						context = context->_next;
 					} while (context != _head);
 				}
@@ -322,14 +328,14 @@ class Genode::Signal_receiver : Noncopyable
 		/**
 		 * List of associated contexts
 		 */
-		Lock         _contexts_lock { };
-		Context_ring _contexts      { };
+		Mutex        _contexts_mutex { };
+		Context_ring _contexts       { };
 
 		/**
 		 * Helper to dissolve given context
 		 *
 		 * This method prevents duplicated code in '~Signal_receiver'
-		 * and 'dissolve'. Note that '_contexts_lock' must be held when
+		 * and 'dissolve'. Note that '_contexts_mutex' must be held when
 		 * calling this method.
 		 */
 		void _unsynchronized_dissolve(Signal_context *context);
@@ -352,7 +358,6 @@ class Genode::Signal_receiver : Noncopyable
 		 */
 		class Context_already_in_use { };
 		class Context_not_associated { };
-		class Signal_not_pending     { };
 
 		/**
 		 * Constructor
@@ -401,10 +406,9 @@ class Genode::Signal_receiver : Noncopyable
 		void unblock_signal_waiter(Rpc_entrypoint &rpc_ep);
 
 		/**
-		 * Retrieve  pending signal
+		 * Retrieve pending signal
 		 *
-		 * \throw   'Signal_not_pending' no pending signal found
-		 * \return  received signal
+		 * \return  received signal (invalid if no pending signal found)
 		 */
 		Signal pending_signal();
 

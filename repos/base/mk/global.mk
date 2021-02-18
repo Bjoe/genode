@@ -147,6 +147,12 @@ CC_CXX_WARN_STRICT ?= -Wextra -Weffc++ -Werror -Wsuggest-override
 CC_CXX_WARN        ?= $(CC_WARN) $(CC_CXX_WARN_STRICT)
 
 #
+# Additional warnings for Ada/SPARK
+#
+CC_ADA_WARN_STRICT ?= -gnatwe -gnatyyBdSux
+CC_ADA_WARN        ?= -gnatwa $(CC_ADA_WARN_STRICT)
+
+#
 # Aggregate compiler options that are common for C and C++
 #
 CC_OPT += $(CC_OPT_NOSTDINC) -g $(CC_MARCH) $(CC_OLEVEL) $(CC_OPT_DEP) $(CC_WARN)
@@ -174,15 +180,9 @@ CC_OPT     += $(CC_OPT_PIC)
 #
 CC_CXX_OPT += $(CC_OPT) $(CC_CXX_WARN)
 CC_C_OPT   += $(CC_OPT)
-CC_ADA_OPT += $(filter-out -fno-builtin-cos -fno-builtin-sin -fno-builtin-cosf -fno-builtin-sinf ,$(CC_OPT)) -fexceptions
-
-#
-# Rust-specific arguments
-#
-# Use the correct linker, include dependencies.
-#
-CC_RUSTC_OPT += -C linker=$(LD)
-CC_RUSTC_OPT += $(foreach lib,$(LIBS),-L$(LIB_CACHE_DIR)/$(lib))
+CC_ADA_OPT += $(CC_ADA_WARN) -fexceptions
+CC_ADA_OPT += $(filter-out -fno-builtin-cos -fno-builtin-sin \
+                           -fno-builtin-cosf -fno-builtin-sinf ,$(CC_OPT))
 
 #
 # Enable C++11 by default

@@ -22,7 +22,8 @@ import_from_depot [depot_user]/src/[base_src] \
                   [depot_user]/pkg/[drivers_interactive_pkg] \
                   [depot_user]/src/nitpicker \
                   [depot_user]/src/demo \
-                  [depot_user]/src/init
+                  [depot_user]/src/init \
+                  [depot_user]/src/vfs_pipe
 
 set build_components {
 	drivers/uart
@@ -65,25 +66,27 @@ install_config {
 		</config>
 	</start>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="gdb_monitor"/> </service>
+			<service name="Event">   <child name="gdb_monitor"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
-		<provides>
-			<service name="Input"/> <service name="Framebuffer"/>
-		</provides>
 	</start>
 
 	<start name="gdb_monitor" caps="200">
 		<resource name="RAM" quantum="10M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<config>
 			<target name="nitpicker">
 				<config>
+					<capture/> <event/>
 					<domain name="pointer" layer="1" xray="no" origin="pointer"
 					        content="client" label="no"/>
 					<domain name="default" layer="3" content="client"
@@ -93,8 +96,11 @@ install_config {
 				</config>
 			</target>
 			<preserve name="RAM" quantum="2M"/>
-			<vfs> <dir name="dev"> <log/> <terminal/> </dir> </vfs>
-			<libc stdout="/dev/log" stderr="/dev/log"/>
+			<vfs>
+				<dir name="dev"> <log/> <terminal/> </dir>
+				<dir name="pipe"> <pipe/> </dir>
+			</vfs>
+			<libc stdout="/dev/log" stderr="/dev/log" pipe="/pipe"/>
 		</config>
 	</start>
 
@@ -115,7 +121,7 @@ proc binary_name_gdbserver_platform_lib_so { } {
 
 # generic modules
 build_boot_image {
-	stdcxx.lib.so libc.lib.so libm.lib.so vfs.lib.so libc_pipe.lib.so
+	stdcxx.lib.so libc.lib.so libm.lib.so vfs.lib.so
 	pc_uart_drv
 	gdb_monitor gdbserver_platform.lib.so
 }
@@ -129,7 +135,7 @@ set local_port 5555
 # qemu config
 
 # connect comport 0 to stdio
-append qemu_args " -serial mon:stdio "
+append qemu_args " -serial stdio "
 
 # connect comport 1 with TCP port $local_port
 append qemu_args " -serial chardev:uart "
@@ -162,7 +168,7 @@ append gdb_cmds {-ex "set interactive-mode auto" }
 
 puts "command: [gdb] debug/ld.lib.so $gdb_cmds"
 
-exec [terminal] -e "[gdb] debug/ld.lib.so $gdb_cmds" &
+exec [terminal] -e "bash -lc \"[gdb] debug/ld.lib.so $gdb_cmds\"" &
 
 interact -i [output_spawn_id]
 

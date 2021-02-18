@@ -21,7 +21,7 @@ if {[have_include "power_on/qemu"] &&
 	exit 0
 }
 
-if {[expr [have_spec imx53] && [have_spec trustzone]]} {
+if {[have_board imx53_qsb_tz]} {
 	puts "Run script is not supported on this platform."
 	exit 0
 }
@@ -82,8 +82,8 @@ append_if $use_nic_bridge   packages " [depot_user]/src/nic_bridge        "
 append_if $use_nic_router   packages " [depot_user]/src/nic_router        "
 append_if $use_usb_driver   packages " [depot_user]/src/platform_drv      "
 append_if $use_usb_driver   packages " [depot_user]/src/usb_drv           "
-append_if $use_wifi_driver  packages " [depot_user]/src/ram_fs            "
 append_if $use_wifi_driver  packages " [depot_user]/src/fs_rom            "
+append_if $use_wifi_driver  packages " [depot_user]/src/vfs_import        "
 append_if $use_wifi_driver  packages " [depot_user]/src/report_rom        "
 append_if $use_wifi_driver  packages " [depot_user]/src/wifi_drv          "
 append_if $use_wifi_driver  packages " [depot_user]/src/libcrypto         "
@@ -141,18 +141,21 @@ if { $use_wifi_driver } {
 	</start>
 
 	<start name="config_fs">
-		<binary name="ram_fs"/>
+		<binary name="vfs"/>
 		<resource name="RAM" quantum="4M"/>
 		<provides> <service name="File_system"/> </provides>
 		<config>
-			<policy label_prefix="config_rom" root="/"/>
-			<content>
-				<inline name="wifi_config">
+			<vfs>
+				<ram/>
+				<import>
+					<inline name="wifi_config">
 <wifi_config connected_scan_interval="0" scan_interval="10" rfkill="no" verbose="no" verbose_state="no">}
 append config "<network ssid=\"$wifi_ssid\" protection=\"WPA2\" passphrase=\"$wifi_psk\"/>"
 append  config { </wifi_config>
-				</inline>
-			</content>
+					</inline>
+				</import>
+			</vfs>
+			<policy label_prefix="config_rom" root="/"/>
 		</config>
 	</start>
 
@@ -193,7 +196,7 @@ append  config { </wifi_config>
 } elseif { $use_usb_driver } {
 	append_platform_drv_config
 	append config {
-	<start name="nic_drv" caps="120">
+	<start name="nic_drv" caps="150">
 		<binary name="usb_drv"/>
 		<resource name="RAM" quantum="18M"/>
 		<provides><service name="Nic"/></provides>
@@ -203,8 +206,8 @@ append  config { </wifi_config>
 	</start> }
 } else {
 	append config {
-	<start name="nic_drv" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="nic_drv" caps="1000" managing_system="yes">
+		<resource name="RAM" quantum="32M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
@@ -216,9 +219,12 @@ append  config { </wifi_config>
 }
 
 append_if $use_nic_router config {
-	<start name="nic_router">
+	<start name="nic_router" caps="120">
 		<resource name="RAM" quantum="5M"/>
-		<provides><service name="Nic"/></provides>
+		<provides>
+			<service name="Nic"/>
+			<service name="Uplink"/>
+		</provides>
 		<config verbose_domain_state="yes">
 
 			<policy label_prefix="netserver_genode" domain="server"/>
@@ -313,16 +319,8 @@ build_boot_image { netserver }
 #
 
 # qemu config
-append qemu_args "  -nographic "
-
-proc qemu_nic_model {} {
-	if [have_spec x86]     { return e1000 }
-	if [have_spec lan9118] { return lan9118 }
-	return nic_model_missing
-}
-
-append qemu_args " -netdev user,id=net0,hostfwd=tcp::12865-:12865,hostfwd=tcp::49153-:49153 "
-append qemu_args " -net nic,model=[qemu_nic_model],netdev=net0 "
+append qemu_args     "  -nographic "
+append_qemu_nic_args "hostfwd=tcp::12865-:12865,hostfwd=tcp::49153-:49153"
 
 set ip_match_string ""
 set force_ports ""

@@ -247,13 +247,13 @@ Vfs_pipe::Pipe_handle::read(char *buf,
 
 bool
 Vfs_pipe::Pipe_handle::read_ready() {
-	return !pipe.buffer.empty(); }
+	return !writer && !pipe.buffer.empty(); }
 
 
 bool
 Vfs_pipe::Pipe_handle::notify_read_ready()
 {
-	if (!read_ready_elem.enqueued())
+	if (!writer && !read_ready_elem.enqueued())
 		pipe.read_ready_waiters.enqueue(read_ready_elem);
 	return true;
 }
@@ -400,8 +400,13 @@ class Vfs_pipe::File_system : public Vfs::File_system
 			Pipe *pipe = nullptr;
 			if (Pipe_handle *handle = dynamic_cast<Pipe_handle*>(vfs_handle)) {
 				pipe = &handle->pipe;
-				if (handle->writer)
+				if (handle->writer) {
 					pipe->num_writers--;
+
+					/* trigger reattempt of read to deliver EOF */
+					if (pipe->num_writers == 0)
+						pipe->submit_signal();
+				}
 			} else
 			if (New_pipe_handle *handle = dynamic_cast<New_pipe_handle*>(vfs_handle))
 				pipe = &handle->pipe;

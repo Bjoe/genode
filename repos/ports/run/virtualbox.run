@@ -1,5 +1,5 @@
 set use_net 0
-set use_ps2 [have_spec ps2]
+set use_ps2 1
 set use_usb 0
 set use_serial 1
 set use_top 1
@@ -28,14 +28,15 @@ create_boot_directory
 
 import_from_depot [depot_user]/src/[base_src] \
                   [depot_user]/src/init \
-                  [depot_user]/src/nitpicker
+                  [depot_user]/src/nitpicker \
+                  [depot_user]/src/vfs_pipe
 
 source ${genode_dir}/repos/base/run/platform_drv.inc
 # override defaults of platform_drv.inc
 proc platform_drv_priority {} { return { priority="-1"} }
 
 lappend_if [expr $use_top]    build_components app/top
-lappend_if [expr $use_ps2]    build_components drivers/input
+lappend_if [expr $use_ps2]    build_components drivers/ps2
 lappend_if [expr $use_usb]    build_components drivers/usb
 lappend_if [expr $use_serial] build_components server/log_terminal
 lappend_if [have_spec x86]    build_components drivers/rtc
@@ -85,13 +86,12 @@ append_platform_drv_config
 append_if [expr $use_ps2] config {
 	<start name="ps2_drv" priority="-1">
 		<resource name="RAM" quantum="2M"/>
-		<provides><service name="Input"/></provides>
+		<config/>
 	</start>}
 
 append_if [expr $use_usb] config {
 	<start name="usb_drv" priority="-1" caps="120">
-		<resource name="RAM" quantum="12M"/>
-		<provides><service name="Input"/></provides>}
+		<resource name="RAM" quantum="12M"/>}
 
 append_if [expr $use_usb] config {
 		<config uhci="yes" ehci="yes" xhci="yes">
@@ -99,25 +99,18 @@ append_if [expr $use_usb] config {
 		</config>
 	</start>}
 
-append_if [have_spec framebuffer] config {
+append_if [have_board pc] config {
 	<start name="fb_drv" priority="-1" caps="150">
 		<binary name="vesa_fb_drv"/>
-		<resource name="RAM" quantum="4M"/>
-		<provides><service name="Framebuffer"/></provides>}
-append_if [expr [have_spec framebuffer] && [have_include power_on/qemu]] config {
-		<config width="1280" height="1024" depth="16" buffered="yes"/>}
-append_if [expr [have_spec framebuffer] && [have_include power_on/qemu]] config {
-		<config buffered="yes"/>}
-append_if [have_spec framebuffer] config {
+		<resource name="RAM" quantum="12M"/>}
+append_if [expr [have_board pc] && [have_include power_on/qemu]] config {
+		<config width="1280" height="1024" buffered="yes"/>}
+append_if [have_board pc] config {
 	</start>}
 
-append_if [have_spec sdl] config {
+append_if [have_board linux] config {
 	<start name="fb_sdl" priority="-1" ld="no">
 		<resource name="RAM" quantum="4M"/>
-		<provides>
-			<service name="Input"/>
-			<service name="Framebuffer"/>
-		</provides>
 	</start>}
 
 append_if [have_spec x86] config {
@@ -169,20 +162,18 @@ append config {
 
 	<start name="nitpicker" priority="-1">
 		<resource name="RAM" quantum="4M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<route>
-			<service name="Framebuffer"> <child name="fb_drv" /> </service>
 			<service name="Report"> <child name="report_rom" /> </service>}
-
-append_if [expr $use_ps2] config {
-			<service name="Input"> <child name="ps2_drv"/> </service>}
-append_if [expr $use_usb] config {
-			<service name="Input"> <child name="usb_drv"/> </service>}
 
 append config {
 			<any-service> <parent/> <any-child /> </any-service>
 		</route>
 		<config>
+			<capture/> <event/>
+
 			<report focus="yes" hover="yes" xray="yes" />
 
 			<domain name="pointer"  layer="1" content="client" label="no" origin="pointer" />
@@ -198,7 +189,7 @@ append config {
 		<provides><service name="Report"/></provides>
 		<config shapes="yes"/>
 		<route>
-			<service name="Nitpicker"> <child name="nitpicker"/>  </service>
+			<service name="Gui"> <child name="nitpicker"/>  </service>
 			<service name="ROM" label="hover"> <child name="report_rom"/> </service>
 			<service name="ROM" label="xray"> <child name="report_rom"/> </service>
 			<any-service> <parent/> </any-service>
@@ -210,19 +201,20 @@ append_if [expr $use_gui] config {
 		<binary name="} $virtualbox_binary {"/>
 		<resource name="RAM" quantum="448M"/>
 		<config vbox_file="test.vbox" vm_name="TestVM">
-			<libc stdout="/dev/log" stderr="/dev/log" rtc="/dev/rtc"/>
+			<libc stdout="/dev/log" stderr="/dev/log" pipe="/pipe" rtc="/dev/rtc"/>
 			<vfs>
-				<dir name="dev"> <log/> <rtc/> </dir>
+				<dir name="dev">
+					<log/> <rtc/>
+				</dir>
+				<dir name="pipe"> <pipe/> </dir>
 				<rom name="test.vbox" />
 				<rom name="test.iso" />
 			</vfs>
 		</config>
 		<route>
 			<service name="Nic"> <child name="nic_bridge"/> </service>
-			<service name="Report" label="shape"> <child name="pointer" label="nit_fb2 -> shape"/> </service>
+			<service name="Report" label="shape"> <child name="pointer" label="gui_fb2 -> shape"/> </service>
 			<service name="Report"> <child name="report_rom"/> </service>
-			<service name="Framebuffer"> <child name="nit_fb2" /> </service>
-			<service name="Input"> <child name="nit_fb2" /> </service>
 			<any-service> <parent /> <any-child /> </any-service>
 		</route>
 	</start>}
@@ -232,9 +224,12 @@ append config {
 		<binary name="} $virtualbox_binary {"/>
 		<resource name="RAM" quantum="448M"/>
 		<config vbox_file="test.vbox" vm_name="TestVM">
-			<libc stdout="/dev/log" stderr="/dev/log" rtc="/dev/rtc"/>
+			<libc stdout="/dev/log" stderr="/dev/log" pipe="/pipe" rtc="/dev/rtc"/>
 			<vfs>
-				<dir name="dev"> <log/> <rtc/> </dir>}
+				<dir name="dev">
+					<log/> <rtc/>
+				</dir>
+				<dir name="pipe"> <pipe/> </dir>}
 
 append_if [expr $use_serial] config {
 				<dir name="dev"> <terminal/> </dir>}
@@ -250,10 +245,8 @@ append_if [expr $use_bridge] config {
 			<service name="Nic"> <child name="nic_bridge"/> </service>}
 
 append config {
-			<service name="Report" label="shape"> <child name="pointer" label="nit_fb1 -> shape"/> </service>
+			<service name="Report" label="shape"> <child name="pointer" label="gui_fb1 -> shape"/> </service>
 			<service name="Report"> <child name="report_rom"/> </service>
-			<service name="Framebuffer"> <child name="nit_fb1" /> </service>
-			<service name="Input"> <child name="nit_fb1" /> </service>
 			<any-service> <parent /> <any-child /> </any-service>
 		</route>
 	</start>
@@ -271,14 +264,14 @@ append boot_modules $virtualbox_binary
 # platform-specific modules
 lappend_if [expr         $use_usb] boot_modules usb_drv
 lappend_if [expr         $use_ps2] boot_modules ps2_drv
-lappend_if [have_spec framebuffer] boot_modules vesa_fb_drv
-lappend_if [have_spec       linux] boot_modules fb_sdl
+lappend_if [have_board pc] boot_modules vesa_fb_drv
+lappend_if [have_board linux] boot_modules fb_sdl
 lappend_if [have_spec         x86] boot_modules rtc_drv
 lappend_if [expr         $use_top] boot_modules top
 lappend_if [expr         $use_gui] boot_modules report_rom
 
 append boot_modules {
-	libc.lib.so vfs.lib.so libm.lib.so libc_pipe.lib.so
+	libc.lib.so vfs.lib.so libm.lib.so
 	libiconv.lib.so stdcxx.lib.so
 	qemu-usb.lib.so
 }

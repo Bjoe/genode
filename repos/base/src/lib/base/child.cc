@@ -35,7 +35,7 @@ static Service &parent_service()
 
 void Child::yield(Resource_args const &args)
 {
-	Lock::Guard guard(_yield_request_lock);
+	Mutex::Guard guard(_yield_request_mutex);
 
 	/* buffer yield request arguments to be picked up by the child */
 	_yield_request_args = args;
@@ -100,13 +100,13 @@ void Child::session_sigh(Signal_context_capability sigh)
  */
 Session_state &
 create_session(Child_policy::Name const &child_name, Service &service,
-               Session_label const &label,
+               Session_label const &label, Session::Diag diag,
                Session_state::Factory &factory, Id_space<Parent::Client> &id_space,
                Parent::Client::Id id, Session_state::Args const &args,
                Affinity const &affinity)
 {
 	try {
-		return service.create_session(factory, id_space, id, label, args, affinity); }
+		return service.create_session(factory, id_space, id, label, diag, args, affinity); }
 
 	catch (Insufficient_ram_quota) {
 		error(child_name, " requested session with insufficient RAM quota");
@@ -145,7 +145,7 @@ Session_capability Child::session(Parent::Client::Id id,
 
 	char argbuf[Parent::Session_args::MAX_SIZE];
 
-	strncpy(argbuf, args.string(), sizeof(argbuf));
+	copy_cstring(argbuf, args.string(), sizeof(argbuf));
 
 	/* prefix session label */
 	Session_label const label = prefixed_label(_policy.name(), label_from_args(argbuf));
@@ -174,7 +174,9 @@ Session_capability Child::session(Parent::Client::Id id,
 	Arg_string::set_arg(argbuf, sizeof(argbuf), "ram_quota", forward_ram_quota.value);
 
 	/* may throw a 'Service_denied' exception */
-	Child_policy::Route route = _policy.resolve_session_request(name.string(), label);
+	Child_policy::Route route =
+		_policy.resolve_session_request(name.string(), label,
+		                                session_diag_from_args(argbuf));
 
 	Service &service = route.service;
 
@@ -182,7 +184,7 @@ Session_capability Child::session(Parent::Client::Id id,
 	Arg_string::set_arg(argbuf, sizeof(argbuf), "diag", route.diag.enabled);
 
 	Session_state &session =
-		create_session(_policy.name(), service, route.label,
+		create_session(_policy.name(), service, route.label, route.diag,
 		               _session_factory, _id_space, id, argbuf, filtered_affinity);
 
 	_policy.session_state_changed();
@@ -685,7 +687,7 @@ void Child::yield_sigh(Signal_context_capability sigh) { _yield_sigh = sigh; }
 
 Parent::Resource_args Child::yield_request()
 {
-	Lock::Guard guard(_yield_request_lock);
+	Mutex::Guard guard(_yield_request_mutex);
 
 	return _yield_request_args;
 }
@@ -777,6 +779,9 @@ void Child::_try_construct_env_dependent_members()
 	_id_space.for_each<Session_state>([&] (Session_state &session) {
 		if (session.phase == Session_state::AVAILABLE)
 			session.phase =  Session_state::CAP_HANDED_OUT; });
+
+	if (_process.constructed())
+		return;
 
 	_policy.init(_cpu.session(), _cpu.cap());
 

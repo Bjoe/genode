@@ -92,6 +92,12 @@ struct Net::Interface_policy
 
 	virtual Genode::Session_label const &label() const = 0;
 
+	virtual void interface_ready() = 0;
+
+	virtual void interface_unready() = 0;
+
+	virtual bool interface_link_state() const = 0;
+
 	virtual void report(Genode::Xml_generator &) const { throw Report::Empty(); }
 
 	virtual ~Interface_policy() { }
@@ -129,8 +135,6 @@ class Net::Interface : private Interface_list::Element
 
 		Packet_stream_sink                   &_sink;
 		Packet_stream_source                 &_source;
-		bool                                 &_session_link_state;
-		Signal_context_capability             _session_link_state_sigh   { };
 		Signal_handler                        _sink_ack;
 		Signal_handler                        _sink_submit;
 		Signal_handler                        _source_ack;
@@ -151,7 +155,7 @@ class Net::Interface : private Interface_list::Element
 		Link_list                             _dissolved_icmp_links      { };
 		Dhcp_allocation_tree                  _dhcp_allocations          { };
 		Dhcp_allocation_list                  _released_dhcp_allocations { };
-		Dhcp_client                           _dhcp_client               { _alloc, _timer, *this };
+		Genode::Constructible<Dhcp_client>    _dhcp_client               { };
 		Interface_list                       &_interfaces;
 		Genode::Constructible<Update_domain>  _update_domain             { };
 		Interface_link_stats                  _udp_stats                 { };
@@ -332,6 +336,8 @@ class Net::Interface : private Interface_list::Element
 
 		void _destroy_link(Link &link);
 
+		void _update_domain_object(Domain &new_domain);
+
 		void _detach_from_domain_raw();
 
 		void _detach_from_domain();
@@ -348,6 +354,8 @@ class Net::Interface : private Interface_list::Element
 		                                Ethernet_frame      const &req_eth,
 		                                Ipv4_packet         const &req_ip,
 		                                Icmp_packet::Code   const  code);
+
+		bool link_state() const;
 
 
 		/***********************************
@@ -384,7 +392,6 @@ class Net::Interface : private Interface_list::Element
 		          Interface_list         &interfaces,
 		          Packet_stream_sink     &sink,
 		          Packet_stream_source   &source,
-		          bool                   &session_link_state,
 		          Interface_policy       &policy);
 
 		virtual ~Interface();
@@ -440,9 +447,7 @@ class Net::Interface : private Interface_list::Element
 
 		void attach_to_domain_finish();
 
-		bool link_state() const;
-
-		void handle_link_state();
+		void handle_interface_link_state();
 
 		void report(Genode::Xml_generator &xml);
 
@@ -465,8 +470,6 @@ class Net::Interface : private Interface_list::Element
 		Interface_link_stats   &icmp_stats()       { return _icmp_stats; }
 		Interface_object_stats &arp_stats()        { return _arp_stats; }
 		Interface_object_stats &dhcp_stats()       { return _dhcp_stats; }
-
-		void session_link_state_sigh(Genode::Signal_context_capability sigh);
 };
 
 #endif /* _INTERFACE_H_ */

@@ -1,6 +1,6 @@
-if {![have_spec x86] || [have_spec linux]} {
-	puts "Platform is unsupported."
-	exit 0
+if {![have_board pc] && ![have_board imx8q_evk]} {
+	puts "Platform is unsupported.";
+	exit 0;
 }
 
 if {[have_spec nova]} {
@@ -10,13 +10,19 @@ if {[have_spec nova]} {
 create_boot_directory
 
 import_from_depot [depot_user]/src/[base_src] \
-                  [depot_user]/pkg/sculpt
+                  [depot_user]/pkg/sculpt-[board]
 
 proc config_system_content {} { return {\
 <!-- supported states: "poweroff" or "reset" when acpica started -->
 <!-- Note: power down your persistent Genode applications & VMs beforehand on your own ! -->
 <system state=""/>} }
 
+proc nic_drv {} {
+	if {[have_board pc]}        { return ipxe_nic_drv }
+	if {[have_board imx8q_evk]} { return fec_nic_drv  }
+	puts "\n Run script is not supported on this platform. \n";
+	exit 0;
+}
 
 install_config {
 <config prio_levels="4"> <!-- set prio_levels to 4 -->
@@ -45,6 +51,7 @@ install_config {
 
 	<start name="timer">
 		<resource name="RAM" quantum="1M"/>
+		<resource name="CPU" quantum="10"/>
 		<provides><service name="Timer"/></provides>
 	</start>
 
@@ -55,8 +62,6 @@ install_config {
 		<config verbose="no">
 			<policy label="leitzentrale_config -> leitzentrale"
 			        report="global_keys_handler -> leitzentrale"/>
-			<policy label="leitzentrale -> manager -> nitpicker_hover"
-			        report="nitpicker -> hover"/>
 			<policy label="pointer -> hover" report="nitpicker -> hover"/>
 			<policy label="pointer -> xray"
 			        report="global_keys_handler -> leitzentrale"/>
@@ -71,10 +76,8 @@ install_config {
 			<policy label="nit_focus -> slides"
 			        report="global_keys_handler -> slides"/>
 			<policy label="nit_focus -> hover" report="nitpicker -> hover"/>
-			<policy label="slides_nit_fb_config -> slides"
+			<policy label="slides_gui_fb_config -> slides"
 			        report="global_keys_handler -> slides"/>
-			<policy label="leitzentrale -> manager -> displays"
-			        report="nitpicker -> displays"/>
 		</config>
 	</start>
 
@@ -99,10 +102,10 @@ install_config {
 						<rom name="wifi"   label="wifi.config"/>
 						<rom name="installation"/>
 						<rom name="runtime"      label="empty_runtime.config"/>
-						<rom name="input_filter" label="input_filter.config"/>
+						<rom name="event_filter" label="event_filter.config"/>
 						<inline name="depot_query"><query/></inline>
 					</dir>
-					<rom name="input_filter"  label="input_filter.config"/>
+					<rom name="event_filter"  label="event_filter.config"/>
 					<rom name="fb_drv"        label="fb_drv.config"/>
 					<rom name="nitpicker"     label="nitpicker.config"/>
 					<rom name="numlock_remap" label="numlock_remap.config"/>
@@ -149,23 +152,26 @@ install_config {
 	</start>
 
 	<start name="report_fs">
-		<binary name="ram_fs"/>
+		<binary name="vfs"/>
 		<resource name="RAM" quantum="16M"/>
 		<provides> <service name="File_system"/> </provides>
 		<config>
-			<content>
-				<inline name="log">### start ###</inline>
-				<dir name="runtime">
-					<inline name="state"><empty/></inline>
-					<dir name="wifi_drv">
-						<inline name="accesspoints"><empty/></inline>
-						<inline name="state">       <empty/></inline>
+			<vfs>
+				<ram/>
+				<import>
+					<inline name="log">### start ###</inline>
+					<dir name="runtime">
+						<inline name="state"><empty/></inline>
+						<dir name="wifi_drv">
+							<inline name="accesspoints"><empty/></inline>
+							<inline name="state">       <empty/></inline>
+						</dir>
+						<dir name="nic_router"> <inline name="state">    <empty/></inline> </dir>
+						<dir name="update">     <inline name="state">    <empty/></inline> </dir>
+						<dir name="depot_query"><inline name="blueprint"><empty/></inline> </dir>
 					</dir>
-					<dir name="nic_router"> <inline name="state">    <empty/></inline> </dir>
-					<dir name="update">     <inline name="state">    <empty/></inline> </dir>
-					<dir name="depot_query"><inline name="blueprint"><empty/></inline> </dir>
-				</dir>
-			</content>
+				</import>
+			</vfs>
 			<policy label="fs_report -> "     root="/" writeable="yes"/>
 			<policy label="log_terminal -> "  root="/" writeable="yes"/>
 			<policy label="report_fs_rom -> " root="/"/>
@@ -232,17 +238,18 @@ install_config {
 		</route>
 	</start>
 
-	<start name="drivers" caps="3000" priority="-1">
-		<resource name="RAM" quantum="96M" constrain_phys="yes"/>
+	<start name="drivers" caps="3150" priority="-1" managing_system="yes">
+		<resource name="RAM" quantum="128M"/>
+		<resource name="CPU" quantum="40"/>
 		<binary name="init"/>
 		<route>
 			<service name="LOG"> <child name="log"/> </service>
 			<service name="ROM" label="config">
 				<child name="config_fs_rom" label="drivers"/> </service>
 			<service name="ROM" label_last="capslock"> <child name="report_rom"/> </service>
-			<service name="ROM" label_last="input_filter.config">
-				<child name="config_fs_rom" label="managed/input_filter"/> </service>
-			<service name="ROM" label_prefix="input_filter" label_suffix=".chargen">
+			<service name="ROM" label_last="event_filter.config">
+				<child name="config_fs_rom" label="managed/event_filter"/> </service>
+			<service name="ROM" label_prefix="event_filter" label_suffix=".chargen">
 				<child name="config_fs_rom"/> </service>
 			<service name="ROM" label_last="fb_drv.config">
 				<child name="config_fs_rom" label="managed/fb_drv"/> </service>
@@ -251,22 +258,25 @@ install_config {
 			<service name="ROM" label_last="usb_policy">
 				<child name="config_fs_rom" label="usb"/> </service>
 			<service name="ROM" label_last="numlock">  <child name="report_rom"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
-			<service name="Report"> <child name="fs_report"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
+			<service name="Report">  <child name="fs_report"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
 		<provides>
-			<service name="Input"/>
-			<service name="Framebuffer"/>
 			<service name="Block"/>
 			<service name="Usb"/>
 			<service name="Platform"/>
+			<service name="Rtc"/>
 		</provides>
 	</start>
 
 	<start name="nitpicker" caps="1000">
 		<resource name="RAM" quantum="6M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<route>
 			<service name="ROM" label="config">
 				<child name="config_fs_rom" label="nitpicker"/> </service>
@@ -274,10 +284,8 @@ install_config {
 				<child name="nit_focus"/> </service>
 			<service name="Report" label="keystate">
 				<child name="report_logger"/> </service>
-			<service name="Report">      <child name="report_rom"/> </service>
-			<service name="Framebuffer"> <child name="drivers"/>    </service>
-			<service name="Input">       <child name="drivers"/>    </service>
-			<service name="Timer">       <child name="timer"/>      </service>
+			<service name="Report"> <child name="report_rom"/> </service>
+			<service name="Timer">  <child name="timer"/>      </service>
 			<any-service> <parent/> </any-service>
 		</route>
 	</start>
@@ -335,7 +343,7 @@ install_config {
 		<provides> <service name="Report"/> </provides>
 		<config shapes="yes"/>
 		<route>
-			<service name="Nitpicker"> <child name="nitpicker"/>  </service>
+			<service name="Gui"> <child name="nitpicker"/>  </service>
 			<service name="ROM" label="hover"> <child name="report_rom"/> </service>
 			<service name="ROM" label="xray">  <child name="report_rom"/> </service>
 			<any-service> <parent/> <any-child/> </any-service>
@@ -362,7 +370,7 @@ install_config {
 		</config>
 		<route>
 			<service name="Report">    <child name="report_rom"/> </service>
-			<service name="Nitpicker"> <child name="nitpicker"/>  </service>
+			<service name="Gui"> <child name="nitpicker"/>  </service>
 			<service name="Timer">     <child name="timer"/>      </service>
 			<any-service> <parent/> </any-service>
 		</route>
@@ -398,7 +406,7 @@ install_config {
 		<resource name="RAM" quantum="130M"/>
 		<affinity xpos="1" width="1"/> <!-- decouple leitzentrale from boot CPU -->
 		<provides>
-			<service name="Nitpicker"/>
+			<service name="Gui"/>
 			<service name="File_system"/> <!-- fonts -->
 			<service name="ROM"/>         <!-- view dialog ROMs -->
 			<service name="Report"/>      <!-- view hover reports -->
@@ -413,14 +421,12 @@ install_config {
 				<child name="report_fs_rom"/> </service>
 			<service name="ROM" label_prefix="manager -> config -> ">
 				<child name="config_fs_rom"/> </service>
-			<service name="ROM" label_prefix="manager -> displays">
-				<child name="report_rom"/> </service>
 			<service name="ROM" label_prefix="config -> ">
 				<child name="config_fs_rom"/> </service>
 			<service name="ROM" label="manager -> nitpicker_hover">
 				<child name="report_rom"/> </service>
 			<service name="Report"> <child name="fs_report"/> </service>
-			<service name="Nitpicker"> <child name="nitpicker"/> </service>
+			<service name="Gui"> <child name="nitpicker"/> </service>
 			<service name="Timer"> <child name="timer"/> </service>
 			<service name="File_system" label="config">
 				<child name="config_fs" label="rw"/> </service>
@@ -432,14 +438,10 @@ install_config {
 		</route>
 	</start>
 
-	<start name="rtc_drv" priority="-1">
-		<resource name="RAM" quantum="1M"/>
-		<provides> <service name="Rtc"/> </provides>
-	</start>
-
 	<start name="runtime" caps="50000" priority="-3">
 		<binary name="init"/>
 		<resource name="RAM" quantum="32G"/>
+		<resource name="CPU" quantum="40"/>
 		<route>
 			<service name="ROM" label="config">
 				<child name="config_fs_rom" label="managed/runtime"/> </service>
@@ -458,20 +460,21 @@ install_config {
 			<service name="Platform" label_prefix="acpica">
 				<child name="drivers" label="acpica"/> </service>
 			<service name="Platform"> <child name="drivers"/> </service>
-			<service name="Nitpicker" label_prefix="leitzentrale">
+			<service name="Rtc"> <child name="drivers"/> </service>
+			<service name="Gui" label_prefix="leitzentrale">
 				<child name="leitzentrale"/> </service>
-			<service name="Nitpicker" label="backdrop">
+			<service name="Gui" label="backdrop">
 				<child name="nitpicker" label="backdrop"/> </service>
-			<service name="Nitpicker" label="lock_screen">
+			<service name="Gui" label="lock_screen">
 				<child name="nitpicker" label="lock_screen"/> </service>
-			<service name="Nitpicker"> <child name="nitpicker"/> </service>
+			<service name="Gui"> <child name="nitpicker"/> </service>
 			<service name="Timer"> <child name="timer"/> </service>
 			<service name="Report" label_suffix="-> shape"> <child name="pointer"/> </service>
-			<service name="Report" label="inspect terminal -> clipboard">
+			<service name="Report" label="inspect -> clipboard">
 				<child name="clipboard" label="leitzentrale -> manager -> fader ->  -> clipboard"/> </service>
 			<service name="Report" label="editor -> clipboard">
 				<child name="clipboard" label="leitzentrale -> manager -> fader ->  -> clipboard"/> </service>
-			<service name="ROM" label="inspect terminal -> clipboard">
+			<service name="ROM" label="inspect -> clipboard">
 				<child name="clipboard" label="leitzentrale -> manager -> fader ->  -> clipboard"/> </service>
 			<service name="ROM" label="editor -> clipboard">
 				<child name="clipboard" label="leitzentrale -> manager -> fader ->  -> clipboard"/> </service>
@@ -486,7 +489,7 @@ install_config {
 			<service name="Report"> <child name="fs_report"/> </service>
 			<service name="LOG" label="unlogged"> <parent/> </service>
 			<service name="LOG"> <child name="log"/> </service>
-			<service name="Rtc"> <child name="rtc_drv"/> </service>
+			<service name="ROM" label="nic_drv"> <parent label="} [nic_drv] {"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
 	</start>
@@ -508,27 +511,29 @@ file copy -force [genode_dir]/repos/gems/recipes/pkg/sculpt/README [run_dir]/gen
 
 file copy -force [genode_dir]/repos/gems/run/sculpt/vimrc [run_dir]/genode/
 
-file copy -force [genode_dir]/repos/gems/run/sculpt/machine.vbox [run_dir]/genode/
-
-file copy -force [genode_dir]/repos/gems/recipes/raw/drivers_managed-pc/drivers.config \
-                 [run_dir]/genode/drivers.config
-
 foreach file { en_us.chargen de_ch.chargen de_de.chargen fr_ch.chargen fr_fr.chargen special.chargen } {
-	file copy -force [genode_dir]/repos/os/src/server/input_filter/$file \
-	                 [run_dir]/genode/$file }
-
-file copy -force [genode_dir]/repos/gems/recipes/raw/drivers_managed-pc/input_filter.config \
-                 [run_dir]/genode/input_filter.config
+	file copy -force [genode_dir]/repos/os/src/server/event_filter/$file \
+		[run_dir]/genode/$file }
 
 file copy -force [genode_dir]/repos/gems/recipes/raw/depot_download/depot_download.config \
-                 [run_dir]/genode/depot_download.config
+	[run_dir]/genode/depot_download.config
 
 file copy -force [genode_dir]/VERSION [run_dir]/genode/
 
 file copy -force [genode_dir]/repos/gems/src/app/backdrop/genode_logo.png [run_dir]/genode/
 file copy -force [genode_dir]/repos/gems/run/sculpt/drop_shadow.png       [run_dir]/genode/
 
-exec gzip -dc [genode_dir]/repos/gems/run/sculpt/machine.vdi.gz > [run_dir]/genode/machine.vdi
+if {[have_board pc]} {
+	file copy -force [genode_dir]/repos/gems/recipes/raw/drivers_managed-pc/event_filter.config \
+	[run_dir]/genode/event_filter.config
+
+	file copy -force [genode_dir]/repos/gems/run/sculpt/machine.vbox [run_dir]/genode/
+
+	file copy -force [genode_dir]/repos/gems/recipes/raw/drivers_managed-pc/drivers.config \
+		[run_dir]/genode/drivers.config
+
+	exec gzip -dc [genode_dir]/repos/gems/run/sculpt/machine.vdi.gz > [run_dir]/genode/machine.vdi
+}
 
 
 #
@@ -537,7 +542,7 @@ exec gzip -dc [genode_dir]/repos/gems/run/sculpt/machine.vdi.gz > [run_dir]/geno
 # Note: the string must be exactly 5 bytes long.
 #
 proc sculpt_version { } {
-	return "20.02" }
+	return "20.09" }
 
 # write file with newline (for producing nice output when using 'cat /VERSION')
 set fd [open [run_dir]/genode/VERSION w]

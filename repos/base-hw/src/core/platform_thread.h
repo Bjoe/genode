@@ -72,7 +72,7 @@ namespace Genode {
 		 */
 		bool _main_thread;
 
-		Affinity::Location _location { };
+		Affinity::Location _location;
 
 		Kernel_object<Kernel::Thread> _kobj;
 
@@ -161,12 +161,6 @@ namespace Genode {
 			 * Resume this thread
 			 */
 			void resume() { Kernel::resume_thread(*_kobj); }
-
-			/**
-			 * Cancel currently blocking operation
-			 */
-			void cancel_blocking() {
-				Kernel::cancel_thread_blocking(*_kobj); }
 
 			/**
 			 * Set CPU quota of the thread to 'quota'

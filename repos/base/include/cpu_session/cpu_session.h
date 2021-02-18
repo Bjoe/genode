@@ -43,7 +43,7 @@ struct Genode::Cpu_session : Session
 	 * allocation, its session capability, the capability of the 'Native_cpu'
 	 * RPC interface, and a capability for the trace-control dataspace.
 	 */
-	enum { CAP_QUOTA = 4 };
+	enum { CAP_QUOTA = 6 };
 
 	typedef Cpu_session_client Client;
 
@@ -220,7 +220,7 @@ struct Genode::Cpu_session : Session
 	/**
 	 * Common base class of kernel-specific CPU interfaces
 	 */
-	struct Native_cpu : Interface { };
+	struct Native_cpu;
 
 	/**
 	 * Return capability to kernel-specific CPU operations

@@ -17,9 +17,10 @@
 #include <base/attached_rom_dataspace.h>
 #include <os/reporter.h>
 #include <os/path.h>
-#include <nitpicker_session/connection.h>
+#include <gui_session/connection.h>
 #include <vm_session/vm_session.h>
 #include <timer_session/connection.h>
+#include <io_port_session/io_port_session.h>
 
 /* included from depot_deploy tool */
 #include <children.h>
@@ -35,7 +36,7 @@
 #include <view/settings_dialog.h>
 #include <view/file_browser_dialog.h>
 #include <menu_view.h>
-#include <nitpicker.h>
+#include <gui.h>
 #include <keyboard_focus.h>
 #include <network.h>
 #include <storage.h>
@@ -68,21 +69,23 @@ struct Sculpt::Main : Input_event_handler,
 
 	Registry<Child_state> _child_states { };
 
-	Constructible<Nitpicker::Connection> _nitpicker { };
+	Gui::Connection _gui { _env, "input" };
+
+	Gui::Root _gui_root { _env, _heap, *this };
 
 	Signal_handler<Main> _input_handler {
 		_env.ep(), *this, &Main::_handle_input };
 
 	void _handle_input()
 	{
-		_nitpicker->input()->for_each_event([&] (Input::Event const &ev) {
+		_gui.input()->for_each_event([&] (Input::Event const &ev) {
 			handle_input_event(ev); });
 	}
 
-	Signal_handler<Main> _nitpicker_mode_handler {
-		_env.ep(), *this, &Main::_handle_nitpicker_mode };
+	Signal_handler<Main> _gui_mode_handler {
+		_env.ep(), *this, &Main::_handle_gui_mode };
 
-	void _handle_nitpicker_mode();
+	void _handle_gui_mode();
 
 	Managed_config<Main> _fonts_config {
 		_env, "config", "fonts", *this, &Main::_handle_fonts_config };
@@ -103,23 +106,16 @@ struct Sculpt::Main : Input_event_handler,
 								if (px > 0.0)
 									_font_size_px = px; }); } }); } }); });
 
-		_handle_nitpicker_mode();
+		_handle_gui_mode();
 	}
 
-	Managed_config<Main> _input_filter_config {
-		_env, "config", "input_filter", *this, &Main::_handle_input_filter_config };
+	Managed_config<Main> _event_filter_config {
+		_env, "config", "event_filter", *this, &Main::_handle_event_filter_config };
 
-	void _handle_input_filter_config(Xml_node)
+	void _handle_event_filter_config(Xml_node)
 	{
-		_input_filter_config.try_generate_manually_managed();
+		_event_filter_config.try_generate_manually_managed();
 	}
-
-	Attached_rom_dataspace _nitpicker_hover { _env, "nitpicker_hover" };
-
-	Signal_handler<Main> _nitpicker_hover_handler {
-		_env.ep(), *this, &Main::_handle_nitpicker_hover };
-
-	void _handle_nitpicker_hover();
 
 
 	/**********************
@@ -363,6 +359,7 @@ struct Sculpt::Main : Input_event_handler,
 
 	Attached_rom_dataspace _editor_saved_rom { _env, "report -> runtime/editor/saved" };
 
+	Affinity::Space _affinity_space { 1, 1 };
 
 	/**
 	 * Panel_dialog::State interface
@@ -592,9 +589,9 @@ struct Sculpt::Main : Input_event_handler,
 	/*
 	 * Fs_dialog::Action interface
 	 */
-	void toggle_file_browser(Storage_target const &target) override
+	void toggle_inspect_view(Storage_target const &target) override
 	{
-		_storage.toggle_file_browser(target);
+		_storage.toggle_inspect_view(target);
 
 		/* refresh visibility to inspect tab */
 		_panel_menu_view.generate();
@@ -613,6 +610,7 @@ struct Sculpt::Main : Input_event_handler,
 	void cancel_format(Storage_target const &target) override
 	{
 		_storage.cancel_format(target);
+		_graph.reset_storage_operation();
 	}
 
 	void expand(Storage_target const &target) override
@@ -623,6 +621,7 @@ struct Sculpt::Main : Input_event_handler,
 	void cancel_expand(Storage_target const &target) override
 	{
 		_storage.cancel_expand(target);
+		_graph.reset_storage_operation();
 	}
 
 	void check(Storage_target const &target) override
@@ -641,6 +640,17 @@ struct Sculpt::Main : Input_event_handler,
 	void remove_deployed_component(Start_name const &name) override
 	{
 		_runtime_state.abandon(name);
+
+		/* update config/managed/deploy with the component 'name' removed */
+		_deploy.update_managed_deploy_config(_manual_deploy_rom.xml());
+	}
+
+	/*
+	 * Graph::Action interface
+	 */
+	void restart_deployed_component(Start_name const &name) override
+	{
+		_runtime_state.restart(name);
 
 		/* update config/managed/deploy with the component 'name' removed */
 		_deploy.update_managed_deploy_config(_manual_deploy_rom.xml());
@@ -710,7 +720,7 @@ struct Sculpt::Main : Input_event_handler,
 	void select_font_size(Font_size font_size) override
 	{
 		_font_size = font_size;
-		_handle_nitpicker_mode();
+		_handle_gui_mode();
 	}
 
 	Signal_handler<Main> _fs_query_result_handler {
@@ -886,7 +896,7 @@ struct Sculpt::Main : Input_event_handler,
 	Start_name new_construction(Component::Path const &pkg,
 	                            Component::Info const &info) override
 	{
-		return _runtime_state.new_construction(pkg, info);
+		return _runtime_state.new_construction(pkg, info, _affinity_space);
 	}
 
 	void _apply_to_construction(Popup_dialog::Action::Apply_to &fn) override
@@ -983,44 +993,6 @@ struct Sculpt::Main : Input_event_handler,
 		_fb_drv_config.try_generate_manually_managed();
 	}
 
-	Attached_rom_dataspace _nitpicker_displays { _env, "displays" };
-
-	Signal_handler<Main> _nitpicker_displays_handler {
-		_env.ep(), *this, &Main::_handle_nitpicker_displays };
-
-	void _handle_nitpicker_displays()
-	{
-		_nitpicker_displays.update();
-
-		if (!_nitpicker_displays.xml().has_sub_node("display"))
-			return;
-
-		if (_nitpicker.constructed())
-			return;
-
-		/*
-		 * Since nitpicker has successfully issued the first 'displays' report,
-		 * there is a good chance that the framebuffer driver is running. This
-		 * is a good time to activate the GUI.
-		 */
-		_nitpicker.construct(_env, "input");
-		_nitpicker->input()->sigh(_input_handler);
-		_nitpicker->mode_sigh(_nitpicker_mode_handler);
-
-		/*
-		 * Adjust GUI parameters to initial nitpicker mode
-		 */
-		_handle_nitpicker_mode();
-
-		/*
-		 * Avoid 'Constructible<Nitpicker::Root>' because it requires the
-		 * definition of 'Nitpicker::Session_component'.
-		 */
-		static Nitpicker::Root gui_nitpicker(_env, _heap, *this);
-
-		generate_runtime_config();
-	}
-
 	void _handle_window_layout();
 
 	template <size_t N, typename FN>
@@ -1064,13 +1036,13 @@ struct Sculpt::Main : Input_event_handler,
 		_manual_deploy_rom.sigh(_manual_deploy_handler);
 		_runtime_state_rom.sigh(_runtime_state_handler);
 		_runtime_config_rom.sigh(_runtime_config_handler);
-		_nitpicker_displays.sigh(_nitpicker_displays_handler);
+		_gui.input()->sigh(_input_handler);
+		_gui.mode_sigh(_gui_mode_handler);
 
 		/*
 		 * Subscribe to reports
 		 */
 		_update_state_rom    .sigh(_update_state_handler);
-		_nitpicker_hover     .sigh(_nitpicker_hover_handler);
 		_pci_devices         .sigh(_pci_devices_handler);
 		_window_list         .sigh(_window_list_handler);
 		_decorator_margins   .sigh(_decorator_margins_handler);
@@ -1086,10 +1058,19 @@ struct Sculpt::Main : Input_event_handler,
 		/*
 		 * Import initial report content
 		 */
+		_handle_gui_mode();
 		_storage.handle_storage_devices_update();
 		_deploy.handle_deploy();
 		_handle_pci_devices();
 		_handle_runtime_config();
+
+		/*
+		 * Read static platform information
+		 */
+		_platform.xml().with_sub_node("affinity-space", [&] (Xml_node const &node) {
+			_affinity_space = Affinity::Space(node.attribute_value("width",  1U),
+			                                  node.attribute_value("height", 1U));
+		});
 
 		/*
 		 * Generate initial config/managed/deploy configuration
@@ -1128,9 +1109,6 @@ void Sculpt::Main::_handle_window_layout()
 
 	unsigned const log_min_w = 400;
 
-	if (!_nitpicker.constructed())
-		return;
-
 	typedef String<128> Label;
 	Label const
 		inspect_label          ("runtime -> leitzentrale -> inspect"),
@@ -1159,14 +1137,18 @@ void Sculpt::Main::_handle_window_layout()
 	if (panel_height == 0)
 		return;
 
-	Framebuffer::Mode const mode = _nitpicker->mode();
+	Framebuffer::Mode const mode = _gui.mode();
+
+	/* suppress intermediate boot-time states before the framebuffer driver is up */
+	if (mode.area.count() <= 1)
+		return;
 
 	/* area reserved for the panel */
-	Rect const panel(Point(0, 0), Area(mode.width(), panel_height));
+	Rect const panel(Point(0, 0), Area(mode.area.w(), panel_height));
 
 	/* available space on the right of the menu */
 	Rect avail(Point(0, panel.h()),
-	           Point(mode.width() - 1, mode.height() - 1));
+	           Point(mode.area.w() - 1, mode.area.h() - 1));
 
 	Point const log_offset = _log_visible
 	                       ? Point(0, 0)
@@ -1174,8 +1156,8 @@ void Sculpt::Main::_handle_window_layout()
 
 	Point const log_p1(avail.x2() - log_min_w - margins.right + 1 + log_offset.x(),
 	                   avail.y1() + margins.top);
-	Point const log_p2(mode.width()  - margins.right  - 1 + log_offset.x(),
-	                   mode.height() - margins.bottom - 1);
+	Point const log_p2(mode.area.w() - margins.right  - 1 + log_offset.x(),
+	                   mode.area.h() - margins.bottom - 1);
 
 	/* position of the inspect window */
 	Point const inspect_p1(avail.x1() + margins.left, avail.y1() + margins.top);
@@ -1225,7 +1207,7 @@ void Sculpt::Main::_handle_window_layout()
 			Area  const size = win_size(win);
 			Point const pos  = _network_visible
 			                 ? Point(log_p1.x() - size.w(), avail.y1())
-			                 : Point(mode.width(), avail.y1());
+			                 : Point(mode.area.w(), avail.y1());
 			gen_window(win, Rect(pos, size));
 		});
 
@@ -1301,7 +1283,7 @@ void Sculpt::Main::_handle_window_layout()
 
 		_with_window(window_list, logo_label, [&] (Xml_node win) {
 			Area  const size = win_size(win);
-			Point const pos(mode.width() - size.w(), mode.height() - size.h());
+			Point const pos(mode.area.w() - size.w(), mode.area.h() - size.h());
 			gen_window(win, Rect(pos, size));
 		});
 	});
@@ -1323,28 +1305,24 @@ void Sculpt::Main::_handle_window_layout()
 }
 
 
-void Sculpt::Main::_handle_nitpicker_mode()
+void Sculpt::Main::_handle_gui_mode()
 {
-	if (!_nitpicker.constructed())
-		return;
-
-	Framebuffer::Mode const mode = _nitpicker->mode();
+	Framebuffer::Mode const mode = _gui.mode();
 
 	_handle_window_layout();
 
 	if (!_fonts_config.try_generate_manually_managed()) {
 
-		_font_size_px = (float)mode.height() / 60.0;
+		_font_size_px = (float)mode.area.h() / 60.0;
+
+		/*
+		 * Limit lower bound of font size. Otherwise, the glyph rendering
+		 * may suffer from division-by-zero problems.
+		 */
+		_font_size_px = max(_font_size_px, 2.0);
 
 		if (_font_size == Font_size::SMALL) _font_size_px *= 0.85;
 		if (_font_size == Font_size::LARGE) _font_size_px *= 1.35;
-
-		Area const size(mode.width(), mode.height());
-		_screen_size = size;
-		_panel_menu_view.min_width = size.w();
-		unsigned const menu_width = max(_font_size_px*21, 320.0);
-		_main_menu_view.min_width = menu_width;
-		_network.min_dialog_width(menu_width);
 
 		_fonts_config.generate([&] (Xml_generator &xml) {
 			xml.attribute("copy",  true);
@@ -1390,15 +1368,13 @@ void Sculpt::Main::_handle_nitpicker_mode()
 		});
 	}
 
-	/* font size may has changed */
-	_panel_menu_view.trigger_restart();
-	_main_menu_view.trigger_restart();
-	_file_browser_menu_view.trigger_restart();
-	_network.trigger_dialog_restart();
-	_graph_menu_view.trigger_restart();
-	_popup_menu_view.trigger_restart();
-	_settings_menu_view.trigger_restart();
+	_screen_size = mode.area;
+	_panel_menu_view.min_width = _screen_size.w();
+	unsigned const menu_width = max(_font_size_px*21, 320.0);
+	_main_menu_view.min_width = menu_width;
+	_network.min_dialog_width(menu_width);
 
+	/* font size may has changed, propagate fonts config of runtime view */
 	generate_runtime_config();
 }
 
@@ -1406,29 +1382,6 @@ void Sculpt::Main::_handle_nitpicker_mode()
 Sculpt::Dialog::Hover_result Sculpt::Main::hover(Xml_node hover)
 {
 	return _storage.dialog.match_sub_dialog(hover, "vbox", "frame", "vbox");
-}
-
-
-void Sculpt::Main::_handle_nitpicker_hover()
-{
-	if (!_storage._discovery_state.discovery_in_progress())
-		return;
-
-	/* check if initial user activity has already been evaluated */
-	if (_storage._discovery_state.user_state != Discovery_state::USER_UNKNOWN)
-		return;
-
-	_nitpicker_hover.update();
-	Xml_node const hover = _nitpicker_hover.xml();
-	if (!hover.has_type("hover"))
-		return;
-
-	_storage._discovery_state.user_state = hover.attribute_value("active", false)
-	                                     ? Discovery_state::USER_INTERVENED
-	                                     : Discovery_state::USER_IDLE;
-
-	/* trigger re-evaluation of default storage target */
-	_storage.handle_storage_devices_update();
 }
 
 
@@ -1486,7 +1439,7 @@ void Sculpt::Main::_handle_runtime_state()
 			Storage_target const target { device.label, partition.number };
 
 			if (partition.check_in_progress) {
-				String<64> name(target.label(), ".fsck.ext2");
+				String<64> name(target.label(), ".e2fsck");
 				Child_exit_state exit_state(state, name);
 
 				if (exit_state.exited) {
@@ -1498,12 +1451,12 @@ void Sculpt::Main::_handle_runtime_state()
 					partition.check_in_progress = 0;
 					reconfigure_runtime = true;
 					_storage.dialog.reset_operation();
-					_graph.reset_operation();
+					_graph.reset_storage_operation();
 				}
 			}
 
 			if (partition.format_in_progress) {
-				String<64> name(target.label(), ".mkfs.ext2");
+				String<64> name(target.label(), ".mke2fs");
 				Child_exit_state exit_state(state, name);
 
 				if (exit_state.exited) {
@@ -1518,7 +1471,7 @@ void Sculpt::Main::_handle_runtime_state()
 
 					reconfigure_runtime = true;
 					_storage.dialog.reset_operation();
-					_graph.reset_operation();
+					_graph.reset_storage_operation();
 				}
 			}
 
@@ -1530,11 +1483,21 @@ void Sculpt::Main::_handle_runtime_state()
 					reconfigure_runtime = true;
 					device.rediscover();
 					_storage.dialog.reset_operation();
-					_graph.reset_operation();
+					_graph.reset_storage_operation();
 				}
 			}
 
 		}); /* for each partition */
+
+		/* respond to failure of part_block */
+		if (device.discovery_in_progress()) {
+			Child_exit_state exit_state(state, device.part_block_start_name());
+			if (!exit_state.responsive) {
+				error(device.part_block_start_name(), " got stuck");
+				device.state = Storage_device::RELEASED;
+				reconfigure_runtime = true;
+			}
+		}
 
 		/* respond to completion of GPT relabeling */
 		if (device.relabel_in_progress()) {
@@ -1543,7 +1506,7 @@ void Sculpt::Main::_handle_runtime_state()
 				device.rediscover();
 				reconfigure_runtime = true;
 				_storage.dialog.reset_operation();
-				_graph.reset_operation();
+				_graph.reset_storage_operation();
 			}
 		}
 
@@ -1562,7 +1525,7 @@ void Sculpt::Main::_handle_runtime_state()
 
 				reconfigure_runtime = true;
 				_storage.dialog.reset_operation();
-				_graph.reset_operation();
+				_graph.reset_storage_operation();
 			}
 		}
 
@@ -1665,6 +1628,8 @@ void Sculpt::Main::_generate_runtime_config(Xml_generator &xml) const
 		xml.attribute("buffer",     "1M");
 	});
 
+	xml.node("heartbeat", [&] () { xml.attribute("rate_ms", 1000); });
+
 	xml.node("parent-provides", [&] () {
 		gen_parent_service<Rom_session>(xml);
 		gen_parent_service<Cpu_session>(xml);
@@ -1678,7 +1643,7 @@ void Sculpt::Main::_generate_runtime_config(Xml_generator &xml) const
 		gen_parent_service<Block::Session>(xml);
 		gen_parent_service<Usb::Session>(xml);
 		gen_parent_service<::File_system::Session>(xml);
-		gen_parent_service<Nitpicker::Session>(xml);
+		gen_parent_service<Gui::Session>(xml);
 		gen_parent_service<Rtc::Session>(xml);
 		gen_parent_service<Trace::Session>(xml);
 		gen_parent_service<Io_mem_session>(xml);
@@ -1686,11 +1651,9 @@ void Sculpt::Main::_generate_runtime_config(Xml_generator &xml) const
 		gen_parent_service<Irq_session>(xml);
 	});
 
-	_platform.xml().with_sub_node("affinity-space", [&] (Xml_node const &node) {
-		xml.node("affinity-space", [&] () {
-			xml.attribute("width",  node.attribute_value("width",  1U));
-			xml.attribute("height", node.attribute_value("height", 1U));
-		});
+	xml.node("affinity-space", [&] () {
+		xml.attribute("width",  _affinity_space.width());
+		xml.attribute("height", _affinity_space.height());
 	});
 
 	xml.node("start", [&] () {
@@ -1714,8 +1677,8 @@ void Sculpt::Main::_generate_runtime_config(Xml_generator &xml) const
 			gen_prepare_start_content(xml, _prepare_version); });
 
 	if (_storage.any_file_system_inspected())
-		gen_file_browser(xml, _storage._storage_devices, _storage._ram_fs_state,
-		                 _storage._file_browser_version);
+		gen_inspect_view(xml, _storage._storage_devices, _storage._ram_fs_state,
+		                 _storage._inspect_view_version);
 
 	/*
 	 * Spawn chroot instances for accessing '/depot' and '/public'. The

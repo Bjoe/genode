@@ -18,15 +18,14 @@
 #include <base/attached_rom_dataspace.h>
 #include <input/event.h>
 #include <input/keycodes.h>
-#include <input_session/connection.h>
 #define Framebuffer Fb_Genode
-#include <nitpicker_session/connection.h>
+#include <gui_session/connection.h>
 #undef Framebuffer
 #include <os/reporter.h>
 #include <report_session/connection.h>
 #include <timer_session/connection.h>
 
-/* included from os/src/drivers/input/spec/ps2 */
+/* included from os/src/drivers/ps2 */
 #include <scan_code_set_1.h>
 
 /* repos/ports includes */
@@ -114,7 +113,7 @@ class GenodeConsole : public Console {
 
 	private:
 
-		Nitpicker::Connection                  _nitpicker;
+		Gui::Connection                        _gui;
 		Input::Session_client                 &_input;
 		unsigned                               _ax, _ay;
 		bool                                   _last_received_motion_event_was_absolute;
@@ -150,8 +149,8 @@ class GenodeConsole : public Console {
 		GenodeConsole()
 		:
 			Console(),
-			_nitpicker(genode_env()),
-			_input(*_nitpicker.input()),
+			_gui(genode_env()),
+			_input(*_gui.input()),
 			_ax(0), _ay(0),
 			_last_received_motion_event_was_absolute(false),
 			_shape_report_connection(genode_env(), "shape",
@@ -182,7 +181,7 @@ class GenodeConsole : public Console {
 			}
 		}
 
-		Nitpicker::Connection &nitpicker() { return _nitpicker; }
+		Gui::Connection &gui() { return _gui; }
 
 		void init_clipboard();
 

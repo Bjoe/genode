@@ -119,8 +119,12 @@ struct Device : List<Device>::Element
 		return &iface->altsetting[alt_setting].endpoint[endpoint_num];
 	}
 
-	Session_label label() {
-		return Session_label("usb-", udev->bus->busnum, "-", udev->devnum); }
+	Session_label label()
+	{
+		if (!udev || !udev->bus)
+			return Session_label("usb-unknown");
+		return Session_label("usb-", udev->bus->busnum, "-", udev->devnum);
+	}
 };
 
 
@@ -448,13 +452,12 @@ class Usb::Worker : public Genode::Weak_object<Usb::Worker>
 		{
 			usb_host_config *config = _device->udev->actconfig;
 
-			if (!config)
-				return;
-
-			for (unsigned i = 0; i < config->desc.bNumInterfaces; i++) {
-				if (usb_interface_claimed(config->interface[i])) {
-					error("There are interfaces claimed, won't set configuration");
-					return;
+			if (config) {
+				for (unsigned i = 0; i < config->desc.bNumInterfaces; i++) {
+					if (usb_interface_claimed(config->interface[i])) {
+						error("There are interfaces claimed, won't set configuration");
+						return;
+					}
 				}
 			}
 
@@ -832,6 +835,29 @@ class Usb::Session_component : public Session_rpc_object,
 				interface_descr->active = true;
 		}
 
+		bool interface_extra(unsigned index, unsigned alt_setting,
+		                     Interface_extra *interface_data)
+		{
+			if (!_device)
+				throw Device_not_found();
+
+			usb_interface *iface = _device->interface(index);
+			if (!iface)
+				throw Interface_not_found();
+
+			Genode::uint8_t length = iface->altsetting[alt_setting].extralen;
+			if (length == 0) return false;
+
+			if (length > sizeof(Interface_extra::data))
+				length = sizeof(Interface_extra::data);
+
+			Genode::memcpy(interface_data->data, iface->altsetting[alt_setting].extra,
+			               length);
+
+			interface_data->length = length;
+			return true;
+		}
+
 		void endpoint_descriptor(unsigned              interface_num,
 		                         unsigned              alt_setting,
 		                         unsigned              endpoint_num,
@@ -1060,6 +1086,13 @@ void Device::report_device_list()
 	{
 
 		for (Device *d = list()->first(); d; d = d->next()) {
+			usb_interface *iface = d->interface(0);
+
+			if (!iface || !iface->cur_altsetting || !d->udev || !d->udev->bus) {
+				Genode::warning("device ", d->label().string(), " state incomplete");
+				continue;
+			}
+
 			xml.node("device", [&] ()
 			{
 				char buf[16];
@@ -1083,7 +1116,6 @@ void Device::report_device_list()
 				Genode::snprintf(buf, sizeof(buf), "0x%4x", dev);
 				xml.attribute("dev", buf);
 
-				usb_interface *iface = d->interface(0);
 				Genode::snprintf(buf, sizeof(buf), "0x%02x",
 				                 iface->cur_altsetting->desc.bInterfaceClass);
 				xml.attribute("class", buf);

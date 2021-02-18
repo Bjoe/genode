@@ -630,8 +630,7 @@ proc exit {{status 0}} {
 if {[expr ![have_spec x86] && \
           ![have_spec arm_v6] && \
           ![have_spec arm_v7a] && \
-          ![have_spec arm_v8a]] || \
-    [expr [have_spec foc] && [have_spec panda]]} \
+          ![have_spec arm_v8a]]} \
 {
 	puts "\n Run script is not supported on this platform. \n";
 	exit 0
@@ -657,6 +656,7 @@ set default_test_pkgs {
 	test-dynamic_config
 	test-dynamic_config_loader
 	test-dynamic_config_slave
+	test-entrypoint
 	test-expat
 	test-fault_detection
 	test-fs_log
@@ -675,6 +675,8 @@ set default_test_pkgs {
 	test-libc_connect_vfs_server_lwip
 	test-libc_connect_vfs_server_lxip
 	test-libc_counter
+	test-libc_execve
+	test-libc_fork
 	test-libc_getenv
 	test-libc_pipe
 	test-libc_vfs
@@ -692,9 +694,7 @@ set default_test_pkgs {
 	test-nic_loopback
 	test-part_block_gpt
 	test-part_block_mbr
-	test-pipe
 	test-pthread
-	test-python
 	test-ram_fs_chunk
 	test-read_only_rom
 	test-reconstructible
@@ -705,14 +705,12 @@ set default_test_pkgs {
 	test-rm_fault
 	test-rm_fault_no_nox
 	test-rm_nested
-	test-rom_block
+	test-rm_stress
 	test-rom_filter
-	test-rust
 	test-sanitizer
 	test-sequence
 	test-signal
 	test-slab
-	test-solo5
 	test-stack_smash
 	test-stdcxx
 	test-synced_interface
@@ -721,9 +719,11 @@ set default_test_pkgs {
 	test-terminal_crosslink
 	test-timer
 	test-tls
+	test-token
 	test-trace
 	test-trace_logger
 	test-utf8
+	test-vfs_block
 	test-vfs_stress_fs
 	test-vfs_stress_ram
 	test-weak_ptr
@@ -756,19 +756,16 @@ proc non_executable_supported { } {
 # Whether to skip a test - if undefined for a test, the test is not skipped
 #
 set skip_test(test-fault_detection) [expr [have_spec pistachio] || [have_spec fiasco]]
-set skip_test(test-fs_packet)       [expr ![interactive] && [expr [have_include "power_on/qemu"] || [have_spec rpi]]]
-set skip_test(test-libc)            [expr [have_spec sel4] || [have_spec rpi] || [expr [have_spec pbxa9] && [have_spec foc]] || [expr [have_spec imx53] && [have_spec trustzone]]]
-set skip_test(test-lx_block)        [expr ![have_spec linux]]
-set skip_test(test-python)          [expr ![have_spec x86]]
-set skip_test(test-rm_fault)        [expr [have_spec linux] || ![non_executable_supported]]
-set skip_test(test-rm_fault_no_nox) [expr [have_spec linux] || ![skip_test test-rm_fault]]
-set skip_test(test-rm_nested)       [expr [have_spec linux]]
+set skip_test(test-fs_packet)       [expr ![interactive] && [have_include "power_on/qemu"]]
+set skip_test(test-libc)            [expr [have_spec sel4] || [have_board rpi] || [expr [have_board pbxa9] && [have_spec foc]] || [have_board imx53_qsb_tz]]
+set skip_test(test-lx_block)        [expr ![have_board linux]]
+set skip_test(test-rm_fault)        [expr [have_board linux] || ![non_executable_supported]]
+set skip_test(test-rm_fault_no_nox) [expr [have_board linux] || ![skip_test test-rm_fault]]
+set skip_test(test-rm_nested)       [expr [have_board linux]]
 set skip_test(test-slab)            [expr ![interactive] && [have_include "power_on/qemu"]]
-set skip_test(test-solo5)           [expr ![have_spec x86_64]]
 set skip_test(test-spark_exception) [expr [have_spec arm]]
 set skip_test(test-tcp_bulk_lwip)   [expr ![have_spec x86] && ![have_include "power_on/qemu"]]
 set skip_test(test-tcp_bulk_lxip)   [expr ![have_spec x86] && ![have_include "power_on/qemu"]]
-set skip_test(test-rust)            [expr [have_spec arm_v8a]]
 
 #
 # FIXME

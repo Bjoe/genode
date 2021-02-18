@@ -14,24 +14,24 @@
 # \arg test_boot_modules
 #
 
-if {[have_spec odroid_xu] || [have_spec zynq]} {
+if {[have_board zynq_qemu]} {
 	puts "Run script does not support this platform."
 	exit 0
 }
 
 # use SD on ARM
-set use_sd_card_drv [expr [have_spec pbxa9]]
+set use_sd_card_drv [expr [have_board pbxa9]]
 
 # use AHCI on x86
 set use_ahci        [expr [have_spec x86] && ![have_spec linux]]
 
-# use ram_block on Linux
-set use_ram_block   [expr [have_spec linux] || [have_spec rpi3]]
+# use vfs_block on Linux
+set use_vfs_block   [expr [have_spec linux] || [have_board rpi3]]
 
 if {[catch { exec which $mkfs_cmd } ]} {
 	puts stderr "Error: $mkfs_cmd not installed, aborting test"; exit }
 
-if {[expr ![have_include "power_on/qemu"] && !$use_ram_block]} {
+if {[expr ![have_include "power_on/qemu"] && !$use_vfs_block]} {
 	puts "\nPlease setup your native sd or hard drive. Remove this fail stop";
 	puts "check when you have prepared your native environment.\n";
 	exit 0
@@ -45,7 +45,8 @@ set build_components { test/libc_vfs }
 
 lappend build_components {*}$test_build_components
 
-lappend_if $use_sd_card_drv build_components drivers/sd_card
+lappend_if $use_sd_card_drv build_components drivers/platform
+lappend_if $use_sd_card_drv build_components drivers/sd_card/pl180
 
 source ${genode_dir}/repos/base/run/platform_drv.inc
 append_platform_drv_build_components
@@ -57,8 +58,9 @@ create_boot_directory
 set depot_pkgs "[depot_user]/src/[base_src] [depot_user]/src/init"
 
 lappend_if $use_ahci       depot_pkgs [depot_user]/src/ahci_drv
-lappend_if $use_ram_block  depot_pkgs [depot_user]/src/ram_block
+lappend_if $use_vfs_block  depot_pkgs [depot_user]/src/vfs_block
 lappend_if $use_vfs_server depot_pkgs [depot_user]/src/vfs
+lappend_if $use_vfs_block  depot_pkgs [depot_user]/src/vfs_import
 
 import_from_depot {*}$depot_pkgs
 
@@ -122,17 +124,42 @@ append_if $use_ahci config {
 	</start>}
 
 append_if $use_sd_card_drv config {
-	<start name="pbxa9_sd_card_drv">
+	<start name="platform_drv">
+		<resource name="RAM" quantum="1M"/>
+		<provides><service name="Platform"/></provides>
+		<config>
+			<device name="">
+				<io_mem   address="0x10005000" size="0x1000"/>
+				<property name="compatible" value="arm,pl18x"/>
+			</device>
+			<policy label="pl180_sd_card_drv -> ">
+				<device name=""/>
+			</policy>
+		</config>
+		<route>
+			<any-service> <parent/> </any-service>
+		</route>
+	</start>
+	<start name="pl180_sd_card_drv">
 		<resource name="RAM" quantum="1M" />
 		<provides><service name="Block"/></provides>
 	</start>
 }
 
-append_if $use_ram_block config {
-	<start name="ram_block">
-		<resource name="RAM" quantum="128M" />
+append_if $use_vfs_block config {
+	<start name="vfs_block" caps="150">
+		<resource name="RAM" quantum="68M" />
 		<provides><service name="Block"/></provides>
-		<config file="test.hda" block_size="512"/>
+		<config>
+			<vfs>
+				<ram/>
+				<import>
+					<rom name="test.hda"/>
+				</import>
+			</vfs>
+			<default-policy file="/test.hda" block_size="512"
+			                writeable="yes"/>
+		</config>
 	</start>}
 
 append_if $use_vfs_server config "
@@ -178,8 +205,9 @@ append boot_modules {
 
 lappend boot_modules {*}$test_boot_modules
 
-lappend_if $use_sd_card_drv  boot_modules pbxa9_sd_card_drv
-lappend_if $use_ram_block    boot_modules test.hda
+lappend_if $use_sd_card_drv  boot_modules platform_drv
+lappend_if $use_sd_card_drv  boot_modules pl180_sd_card_drv
+lappend_if $use_vfs_block    boot_modules test.hda
 
 append_platform_drv_boot_modules
 

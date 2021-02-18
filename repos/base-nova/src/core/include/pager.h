@@ -5,7 +5,7 @@
  */
 
 /*
- * Copyright (C) 2006-2017 Genode Labs GmbH
+ * Copyright (C) 2006-2020 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
  * under the terms of the GNU Affero General Public License version 3.
@@ -78,7 +78,7 @@ namespace Genode {
 			addr_t _initial_eip = 0;
 			addr_t _client_exc_pt_sel;
 
-			Lock   _state_lock { };
+			Mutex  _state_lock { };
 
 			struct
 			{
@@ -92,6 +92,7 @@ namespace Genode {
 					DISSOLVED        = 0x10U,
 					SUBMIT_SIGNAL    = 0x20U,
 					BLOCKED_PAUSE_SM = 0x40U,
+					MIGRATE          = 0x80U
 				};
 				uint8_t _status;
 				bool modified;
@@ -119,11 +120,15 @@ namespace Genode {
 				inline void submit_signal() { _status |= SUBMIT_SIGNAL; }
 				inline void reset_submit() { _status &= ~SUBMIT_SIGNAL; }
 
+				bool migrate() const { return _status & MIGRATE; }
+				void reset_migrate() { _status &= ~MIGRATE; }
+				void request_migrate() { _status |= MIGRATE; }
 			} _state { };
 
 			Cpu_session_capability   _cpu_session_cap;
 			Thread_capability        _thread_cap;
-			Affinity::Location const _location;
+			Affinity::Location       _location;
+			Affinity::Location       _next_location { };
 			Exception_handlers       _exceptions;
 
 			addr_t _pd_target;
@@ -153,6 +158,9 @@ namespace Genode {
 			__attribute__((regparm(3)))
 			static void _oom_handler(addr_t, addr_t, addr_t);
 
+			void _construct_pager();
+			bool _migrate_thread();
+
 		public:
 
 			Pager_object(Cpu_session_capability cpu_session_cap,
@@ -164,7 +172,11 @@ namespace Genode {
 			virtual ~Pager_object();
 
 			unsigned long badge() const { return _badge; }
-			void reset_badge() { _badge = 0; }
+			void reset_badge()
+			{
+				Genode::Mutex::Guard guard(_state_lock);
+				_badge = 0;
+			}
 
 			const char * client_thread() const;
 			const char * client_pd() const;
@@ -180,6 +192,8 @@ namespace Genode {
 			}
 
 			Affinity::Location location() const { return _location; }
+
+			void migrate(Affinity::Location);
 
 			/**
 			 * Assign PD selector to PD
@@ -230,7 +244,7 @@ namespace Genode {
 			 */
 			bool copy_thread_state(Thread_state * state_dst)
 			{
-				Lock::Guard _state_lock_guard(_state_lock);
+				Mutex::Guard _state_lock_guard(_state_lock);
 
 				if (!state_dst || !_state.blocked())
 					return false;
@@ -245,7 +259,7 @@ namespace Genode {
 			 */
 			bool copy_thread_state(Thread_state state_src)
 			{
-				Lock::Guard _state_lock_guard(_state_lock);
+				Mutex::Guard _state_lock_guard(_state_lock);
 
 				if (!_state.blocked())
 					return false;
@@ -256,23 +270,17 @@ namespace Genode {
 				return true;
 			}
 
-			/**
-			 * Cancel blocking in a lock so that recall exception can take
-			 * place.
-			 */
-			void    client_cancel_blocking();
-
 			uint8_t client_recall(bool get_state_and_block);
 			void client_set_ec(addr_t ec) { _state.sel_client_ec = ec; }
 
 			inline void single_step(bool on)
 			{
-				_state_lock.lock();
+				_state_lock.acquire();
 
 				if (_state.is_dead() || !_state.blocked() ||
 				    (on && (_state._status & _state.SINGLESTEP)) ||
 				    (!on && !(_state._status & _state.SINGLESTEP))) {
-				    _state_lock.unlock();
+				    _state_lock.release();
 					return;
 				}
 
@@ -281,7 +289,7 @@ namespace Genode {
 				else
 					_state._status &= ~_state.SINGLESTEP;
 
-				_state_lock.unlock();
+				_state_lock.release();
 
 				/* force client in exit and thereby apply single_step change */
 				client_recall(false);
@@ -321,7 +329,7 @@ namespace Genode {
 			/**
 			 * Portal called by thread that causes a out of memory in kernel.
 			 */
-			addr_t get_oom_portal();
+			addr_t create_oom_portal();
 
 			enum Policy {
 				STOP = 1,
@@ -365,59 +373,6 @@ namespace Genode {
 	};
 
 	/**
-	 * A 'Pager_activation' processes one page fault of a 'Pager_object' at a time.
-	 */
-	class Pager_entrypoint;
-	class Pager_activation_base: public Thread
-	{
-		private:
-
-			Native_capability _cap;
-			Pager_entrypoint *_ep;       /* entry point to which the
-			                                activation belongs */
-			/**
-			 * Lock used for blocking until '_cap' is initialized
-			 */
-			Lock _cap_valid;
-
-			/*
-			 * Noncopyable
-			 */
-			Pager_activation_base(Pager_activation_base const &);
-			Pager_activation_base &operator = (Pager_activation_base const &);
-
-		public:
-
-			/**
-			 * Constructor
-			 *
-			 * \param name        name of the new thread
-			 * \param stack_size  stack size of the new thread
-			 */
-			Pager_activation_base(char const * const name,
-			                      size_t const stack_size);
-
-			/**
-			 * Thread interface
-			 */
-			void entry() override;
-
-			/**
-			 * Return capability to this activation
-			 *
-			 * This function should only be called from 'Pager_entrypoint'
-			 */
-			Native_capability cap()
-			{
-				/* ensure that the initialization of our 'Ipc_pager' is done */
-				if (!_cap.valid())
-					_cap_valid.lock();
-				return _cap;
-			}
-	};
-
-
-	/**
 	 * Paging entry point
 	 *
 	 * For a paging entry point can hold only one activation. So, paging is
@@ -446,16 +401,6 @@ namespace Genode {
 			 * Dissolve Pager_object from entry point
 			 */
 			void dissolve(Pager_object &obj);
-	};
-
-
-	template <int STACK_SIZE>
-	class Pager_activation : public Pager_activation_base
-	{
-		public:
-
-			Pager_activation() : Pager_activation_base("pager", STACK_SIZE)
-			{ }
 	};
 }
 

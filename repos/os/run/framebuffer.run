@@ -3,7 +3,7 @@ import_from_depot [depot_user]/src/[base_src] \
                   [depot_user]/pkg/[drivers_interactive_pkg] \
                   [depot_user]/src/init
 
-build { test/framebuffer }
+build { server/event_dump test/framebuffer }
 
 install_config {
 <config>
@@ -27,23 +27,32 @@ install_config {
 		<provides><service name="Timer"/></provides>
 	</start>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="test-framebuffer"/> </service>
+			<service name="Event">   <child name="event_dump"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
-		<provides>
-			<service name="Input"/> <service name="Framebuffer"/>
-		</provides>
+	</start>
+
+	<start name="event_dump">
+		<resource name="RAM" quantum="1M"/>
+		<provides> <service name="Event"/> </provides>
+		<config/>
 	</start>
 
 	<start name="test-framebuffer">
 		<resource name="RAM" quantum="10M"/>
+		<provides> <service name="Capture"/> </provides>
+		<config/>
 	</start>
+
 </config>}
 
-build_boot_image { test-framebuffer }
+build_boot_image { event_dump test-framebuffer }
+
 run_genode_until forever

@@ -164,11 +164,12 @@ class Genode::Slave::Policy : public Child_policy
 		}
 
 		Route resolve_session_request(Service::Name const &name,
-		                              Session_label const &label) override
+		                              Session_label const &label,
+		                              Session::Diag const  diag) override
 		{
 			return Route { .service = _matching_service(name, label),
 			               .label   = label,
-			               .diag    = Session::Diag() };
+			               .diag    = diag };
 		}
 
 		Id_space<Parent::Server> &server_id_space() override {
@@ -189,9 +190,9 @@ class Genode::Slave::Connection_base
 		struct Service : Genode::Service, Session_state::Ready_callback,
 		                                  Session_state::Closed_callback
 		{
-			Policy &_policy;
-			Lock    _lock { Lock::LOCKED };
-			bool    _alive = false;
+			Policy   &_policy;
+			Blockade  _blockade { };
+			bool      _alive = false;
 
 			Service(Policy &policy)
 			:
@@ -240,13 +241,13 @@ class Genode::Slave::Connection_base
 			void session_ready(Session_state &session) override
 			{
 				_alive = session.alive();
-				_lock.unlock();
+				_blockade.wakeup();
 			}
 
 			/**
 			 * Session_state::Closed_callback
 			 */
-			void session_closed(Session_state &s) override { _lock.unlock(); }
+			void session_closed(Session_state &s) override { _blockade.wakeup(); }
 
 			/**
 			 * Service ('Ram_transfer::Account') interface
@@ -290,7 +291,7 @@ class Genode::Slave::Connection_base
 			_connection(_service, _id_space, { 1 }, args, affinity)
 		{
 			_policy.trigger_session_requests();
-			_service._lock.lock();
+			_service._blockade.block();
 			if (!_service._alive)
 				throw Service_denied();
 		}
@@ -298,7 +299,7 @@ class Genode::Slave::Connection_base
 		~Connection_base()
 		{
 			_policy.trigger_session_requests();
-			_service._lock.lock();
+			_service._blockade.block();
 		}
 
 		typedef typename CONNECTION::Session_type SESSION;

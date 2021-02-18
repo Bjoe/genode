@@ -17,7 +17,7 @@
 #include <scout/platform.h>
 #include <scout/tick.h>
 #include <scout/user_state.h>
-#include <scout/nitpicker_graphics_backend.h>
+#include <scout/graphics_backend_impl.h>
 
 #include "config.h"
 #include "elements.h"
@@ -63,9 +63,9 @@ struct Scout::Main : Scout::Event_handler
 	bool const _launcher_initialized = (Launcher::init(_env, _heap), true);
 	bool const _png_image_initialized = (Png_image::init(_heap), true);
 
-	Nitpicker::Connection _nitpicker { _env };
+	Gui::Connection _gui { _env };
 
-	Platform _platform { _env, *_nitpicker.input() };
+	Platform _platform { _env, *_gui.input() };
 
 	bool const _event_handler_registered = (_platform.event_handler(*this), true);
 
@@ -75,14 +75,14 @@ struct Scout::Main : Scout::Event_handler
 
 	Config const _config { };
 
-	Nitpicker_graphics_backend
-		_graphics_backend { _env.rm(), _nitpicker, _heap, _max_size,
+	Graphics_backend_impl
+		_graphics_backend { _env.rm(), _gui, _heap, _max_size,
 		                    _initial_position, _initial_size };
 
 	void _init_navicons()
 	{
 		for (unsigned int i = 0; i < sizeof(navicons)/sizeof(void *); i++) {
-			Fade_icon<Pixel_rgb565, 64, 64> *icon = new Fade_icon<Pixel_rgb565, 64, 64>;
+			Fade_icon<Pixel_rgb888, 64, 64> *icon = new Fade_icon<Pixel_rgb888, 64, 64>;
 			icon->rgba(navicons_rgba[i]);
 			icon->alpha(100);
 			*navicons[i] = icon;
@@ -94,12 +94,12 @@ struct Scout::Main : Scout::Event_handler
 	Document &_doc = *create_document();
 
 	/* create instance of browser window */
-	Browser_window<Pixel_rgb565> _browser { &_doc, _graphics_backend,
+	Browser_window<Pixel_rgb888> _browser { &_doc, _graphics_backend,
 	                                        _initial_position, _initial_size,
 	                                        _max_size, _config };
 
 	/* initialize mouse cursor */
-	Icon<Pixel_rgb565, 32, 32> _mcursor { };
+	Icon<Pixel_rgb888, 32, 32> _mcursor { };
 
 	void _init_mouse_cursor()
 	{

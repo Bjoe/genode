@@ -8,7 +8,7 @@
  */
 
 /*
- * Copyright (C) 2014-2017 Genode Labs GmbH
+ * Copyright (C) 2014-2020 Genode Labs GmbH
  *
  * This file is part of the Genode OS framework, which is distributed
  * under the terms of the GNU Affero General Public License version 3.
@@ -28,6 +28,7 @@
 
 void notify_play();
 void notify_record();
+void notify_hp_sense(int const);
 
 
 /*****************
@@ -686,7 +687,11 @@ void pci_conf_write(pci_chipset_tag_t, pcitag_t, int, pcireg_t);
  ** sys/timeout.h **
  *******************/
 
-struct timeout { };
+struct timeout
+{
+	void (*fn)(void *);
+	void *arg;
+};
 
 void timeout_set(struct timeout *, void (*)(void *), void *);
 int timeout_add_msec(struct timeout *, int);
@@ -714,6 +719,14 @@ struct timeval
 };
 
 void microuptime(struct timeval *);
+
+
+/***************************
+ ** lib/libkern/libkern.h **
+ ***************************/
+
+size_t strlcpy(char *, char const *, size_t);
+
 
 #include <extern_c_end.h>
 

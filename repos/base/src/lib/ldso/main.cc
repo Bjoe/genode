@@ -19,7 +19,7 @@
 #include <util/string.h>
 #include <base/thread.h>
 #include <base/heap.h>
-#include <base/platform.h>
+#include <base/sleep.h>
 
 /* base-internal includes */
 #include <base/internal/unmanaged_singleton.h>
@@ -44,14 +44,10 @@ namespace Linker {
 };
 
 static    Binary *binary_ptr = nullptr;
+static    Parent *parent_ptr = nullptr;
 bool      Linker::verbose  = false;
 Stage     Linker::stage    = STAGE_BINARY;
 Link_map *Link_map::first;
-
-/**
- * Registers dtors
- */
-int genode_atexit(Linker::Func);
 
 
 Linker::Region_map::Constructible_region_map &Linker::Region_map::r()
@@ -66,10 +62,10 @@ Linker::Region_map::Constructible_region_map &Linker::Region_map::r()
 }
 
 
-Genode::Lock &Linker::lock()
+Genode::Mutex &Linker::mutex()
 {
-	static Lock _lock;
-	return _lock;
+	static Mutex _mutex;
+	return _mutex;
 }
 
 
@@ -296,7 +292,7 @@ struct Linker::Ld : private Dependency, Elf_object
 
 Elf::Addr Ld::jmp_slot(Dependency const &dep, Elf::Size index)
 {
-	Lock::Guard guard(lock());
+	Mutex::Guard guard(mutex());
 
 	if (verbose_relocation)
 		log("LD: SLOT ", &dep.obj(), " ", Hex(index));
@@ -344,8 +340,6 @@ Linker::Ld &Linker::Ld::linker()
 extern char **genode_argv;
 extern int    genode_argc;
 extern char **genode_envp;
-
-void genode_exit(int status);
 
 static int exit_status;
 
@@ -412,17 +406,20 @@ struct Linker::Binary : private Root_object, public Elf_object
 	{
 		Init::list()->exec_static_constructors();
 
-		/* call static constructors and register destructors */
+		/* call static constructors */
 		Func * const ctors_start = (Func *)lookup_symbol("_ctors_start");
 		Func * const ctors_end   = (Func *)lookup_symbol("_ctors_end");
 		for (Func * ctor = ctors_end; ctor != ctors_start; (*--ctor)());
 
-		Func * const dtors_start = (Func *)lookup_symbol("_dtors_start");
-		Func * const dtors_end   = (Func *)lookup_symbol("_dtors_end");
-		for (Func * dtor = dtors_start; dtor != dtors_end; genode_atexit(*dtor++));
-
 		static_construction_finished = true;
 		stage = STAGE_SO;
+	}
+
+	void call_dtors()
+	{
+		Func * const dtors_start = (Func *)lookup_symbol("_dtors_start");
+		Func * const dtors_end   = (Func *)lookup_symbol("_dtors_end");
+		for (Func * dtor = dtors_end; dtor != dtors_start; (*--dtor)());
 	}
 
 	void call_entry_point(Env &env)
@@ -495,6 +492,19 @@ struct Linker::Binary : private Root_object, public Elf_object
 
 	bool is_binary() const override { return true; }
 };
+
+
+void genode_exit(int status)
+{
+	binary_ptr->call_dtors();
+
+	/* inform parent about the exit status */
+	if (parent_ptr)
+		parent_ptr->exit(status);
+
+	/* wait for destruction by the parent */
+	Genode::sleep_forever();
+}
 
 
 /**********************************
@@ -670,6 +680,42 @@ static Genode::Constructible<Heap> &heap()
 void Genode::init_ldso_phdr(Env &env)
 {
 	/*
+	 * Custom 'Region_map' that is used to place heap allocations of the
+	 * dynamic linker within the linker area, keeping the rest of the
+	 * component's virtual address space unpolluted.
+	 */
+	struct Linker_area_region_map : Region_map
+	{
+		struct Not_implemented : Exception { };
+
+		Local_addr attach(Dataspace_capability ds, size_t, off_t,
+		                  bool, Local_addr, bool, bool) override
+		{
+			size_t const size = Dataspace_client(ds).size();
+
+			Linker::Region_map &linker_area = *Linker::Region_map::r();
+
+			addr_t const at = linker_area.alloc_region_at_end(size);
+
+			(void)linker_area.attach_at(ds, at, size, 0UL);
+
+			return at;
+		}
+
+		void detach(Local_addr) override { throw Not_implemented(); }
+
+		void fault_handler(Signal_context_capability) override { }
+
+		State state() override { throw Not_implemented(); }
+
+		Dataspace_capability dataspace() override { throw Not_implemented(); }
+
+		Linker_area_region_map() { }
+	};
+
+	Linker_area_region_map &ld_rm = *unmanaged_singleton<Linker_area_region_map>();
+
+	/*
 	 * Use a statically allocated initial block to make the first dynamic
 	 * allocations deterministic. This assumption is required by the libc's
 	 * fork mechanism on Linux. Without the initial block, the Linux kernel
@@ -680,7 +726,7 @@ void Genode::init_ldso_phdr(Env &env)
 	 * must reside on the same addresses in the parent and child.
 	 */
 	static char initial_block[8*1024];
-	heap().construct(&env.ram(), &env.rm(), Heap::UNLIMITED,
+	heap().construct(&env.ram(), &ld_rm, Heap::UNLIMITED,
 	                 initial_block, sizeof(initial_block));
 
 	/* load program headers of linker now */
@@ -755,6 +801,8 @@ void Component::construct(Genode::Env &env)
 	Config const config(env);
 
 	verbose = config.verbose();
+
+	parent_ptr = &env.parent();
 
 	/* load binary and all dependencies */
 	try {

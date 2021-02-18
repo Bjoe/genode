@@ -124,6 +124,8 @@ class Ata::Protocol : public Ahci::Protocol, Noncopyable
 {
 	private:
 
+		bool _syncing { false };
+
 		struct Request : Block::Request
 		{
 			bool valid() const { return operation.valid(); }
@@ -162,6 +164,9 @@ class Ata::Protocol : public Ahci::Protocol, Noncopyable
 			block_number_t end = block_number + request.operation.count - 1;
 
 			auto overlap_check = [&] (Request const &req) {
+				if (req.operation.type == Block::Operation::Type::SYNC)
+					return false;
+
 				block_number_t pending_start = req.operation.block_number;
 				block_number_t pending_end   = pending_start + req.operation.count - 1;
 
@@ -171,10 +176,14 @@ class Ata::Protocol : public Ahci::Protocol, Noncopyable
 				    (pending_start >= block_number && pending_start <= end) ||
 				    (pending_end   >= block_number && pending_end   <= end)) {
 
-					warning("overlap: "
+					warning("overlap: ",
 					        "pending ", pending_start,
-					        " + ", req.operation.count, ", "
-					        "request: ", block_number, " + ", request.operation.count);
+					        " + ", req.operation.count,
+									" (", req.operation.type == Block::Operation::Type::WRITE ?
+									"write" : "read", "), ",
+					        "request: ", block_number, " + ", request.operation.count,
+									" (", request.operation.type == Block::Operation::Type::WRITE ?
+									"write" : "read", ")");
 					return true;
 				}
 
@@ -248,16 +257,22 @@ class Ata::Protocol : public Ahci::Protocol, Noncopyable
 
 		void handle_irq(Port &port) override
 		{
+			unsigned is = port.read<Port::Is>();
+
 			/* ncg */
-			if (_ncq_support(port))
-				while (Port::Is::Sdbs::get(port.read<Port::Is>()))
+			if (_ncq_support(port) && Port::Is::Fpdma_irq::get(is))
+				do {
 					port.ack_irq();
+				}
+				while (Port::Is::Sdbs::get(port.read<Port::Is>()));
 			/* normal dma */
 			else if (Port::Is::Dma_ext_irq::get(port.read<Port::Is>()))
 				port.ack_irq();
 
 			_slot_states = port.read<Port::Ci>() | port.read<Port::Sact>();
 			port.stop();
+
+			_syncing = false;
 		}
 
 		Block::Session::Info info() const override
@@ -272,14 +287,24 @@ class Ata::Protocol : public Ahci::Protocol, Noncopyable
 
 		Response submit(Port &port, Block::Request const request) override
 		{
-			if (port.sanity_check(request) == false || port.dma_base == 0)
-				return Response::REJECTED;
+			Block::Operation const op = request.operation;
 
-			if (_writeable == false && request.operation.type == Block::Operation::Type::WRITE)
-				return Response::REJECTED;
+			bool const sync  = (op.type == Block::Operation::Type::SYNC);
+			bool const write = (op.type == Block::Operation::Type::WRITE);
 
-			if (_overlap_check(request))
+			if ((sync && _slot_states) || _syncing)
 				return Response::RETRY;
+
+			if (_writeable == false && write)
+				return Response::REJECTED;
+
+			if (Block::Operation::has_payload(op.type)) {
+				if (port.sanity_check(request) == false || port.dma_base == 0)
+					return Response::REJECTED;
+
+				if (_overlap_check(request))
+					return Response::RETRY;
+			}
 
 			Request *r = _slots.get();
 
@@ -288,7 +313,6 @@ class Ata::Protocol : public Ahci::Protocol, Noncopyable
 
 			*r = request;
 
-			Block::Operation op = request.operation;
 			size_t slot         = _slots.index(*r);
 			_slot_states       |= 1u << slot;
 
@@ -298,21 +322,22 @@ class Ata::Protocol : public Ahci::Protocol, Noncopyable
 			                    op.count * _block_size());
 
 			/* setup ATA command */
-			bool read = op.type == Block::Operation::Type::READ;
-
-			if (_ncq_support(port)) {
-				table.fis.fpdma(read, op.block_number, op.count, slot);
+			if (sync) {
+				table.fis.flush_cache_ext();
+				_syncing = true;
+			} else if (_ncq_support(port)) {
+				table.fis.fpdma(write == false, op.block_number, op.count, slot);
 				/* ensure that 'Cmd::St' is 1 before writing 'Sact' */
 				port.start();
 				/* set pending */
 				port.write<Port::Sact>(1U << slot);
 			} else {
-				table.fis.dma_ext(read, op.block_number, op.count);
+				table.fis.dma_ext(write == false, op.block_number, op.count);
 			}
 
 			/* set or clear write flag in command header */
 			Command_header header(port.command_header_addr(slot));
-			header.write<Command_header::Bits::W>(read ? 0 : 1);
+			header.write<Command_header::Bits::W>(write ? 1 : 0);
 			header.clear_byte_count();
 
 			port.execute(slot);

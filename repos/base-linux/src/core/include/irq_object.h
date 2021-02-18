@@ -16,19 +16,16 @@
 
 #include <base/thread.h>
 
-namespace Genode
-{
-	class Irq_object;
-};
+namespace Genode { class Irq_object; };
 
-class Genode::Irq_object : public Thread_deprecated<4096>
-{
 
+class Genode::Irq_object : public Thread
+{
 	private:
 
-		Genode::Signal_context_capability _sig_cap;
-		Genode::Lock _sync_ack;
-		Genode::Lock _sync_bootup;
+		Signal_context_capability _sig_cap;
+		Blockade _sync_ack { };
+		Blockade _sync_bootup { };
 		unsigned const _irq;
 		int _fd;
 

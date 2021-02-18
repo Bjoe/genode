@@ -36,6 +36,9 @@ struct Hw::Arm_cpu
 		struct Me    : Bitfield<31, 1> { }; /* multiprocessing extension */
 	);
 
+	/* Virtual Multiprocessor Affinity Register */
+	ARM_CP15_REGISTER_32BIT(Vmpidr, c0, c0, 4, 5);
+
 	/* System Control Register */
 	ARM_CP15_REGISTER_32BIT(Sctlr, c1, c0, 0, 0,
 		struct M : Bitfield<0,1>  { }; /* enable MMU */
@@ -198,6 +201,12 @@ struct Hw::Arm_cpu
 
 	/* Branch predictor invalidate all */
 	ARM_CP15_REGISTER_32BIT(Bpiall, c7, c5,  0, 6);
+
+	/* Branch predictor invalidate all */
+	ARM_CP15_REGISTER_32BIT(Bpimva, c7, c5,  0, 7);
+
+	/* Data Cache Clean by MVA to PoC */
+	ARM_CP15_REGISTER_32BIT(Dccmvac, c7, c10, 0, 1);
 
 	/* Data Cache Clean and Invalidate by MVA to PoC */
 	ARM_CP15_REGISTER_32BIT(Dccimvac, c7, c14, 0, 1);

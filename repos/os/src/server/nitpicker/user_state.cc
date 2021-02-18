@@ -124,23 +124,8 @@ void User_state::_handle_input_event(Input::Event ev)
 		_key_array.pressed(key, false);
 	});
 
-	View_component const * const pointed_view = _view_stack.find_view(_pointer_pos);
-
-	View_owner * const hovered = pointed_view ? &pointed_view->owner() : 0;
-
-	/*
-	 * Deliver a leave event if pointed-to session changed, notify newly
-	 * hovered session about the current pointer position.
-	 */
-	if (hovered != _hovered) {
-		if (_hovered)
-			_hovered->submit_input_event(Hover_leave());
-
-		if (hovered && _key_cnt == 0)
-			hovered->submit_input_event(Absolute_motion{_pointer_pos.x(),
-			                                            _pointer_pos.y()});
-		_hovered = hovered;
-	}
+	if (ev.absolute_motion() || ev.relative_motion())
+		update_hover();
 
 	/*
 	 * Handle start of a key sequence
@@ -277,8 +262,7 @@ void User_state::_handle_input_event(Input::Event ev)
 
 
 User_state::Handle_input_result
-User_state::handle_input_events(Input::Event const * const ev_buf,
-                                unsigned const num_ev)
+User_state::handle_input_events(Input_batch batch)
 {
 	Point              const old_pointer_pos    = _pointer_pos;
 	View_owner       * const old_hovered        = _hovered;
@@ -289,18 +273,18 @@ User_state::handle_input_events(Input::Event const * const ev_buf,
 
 	bool button_activity = false;
 
-	if (num_ev > 0) {
+	if (batch.count > 0) {
 		/*
 		 * Take events from input event buffer, merge consecutive motion
 		 * events, and pass result to the user state.
 		 */
-		for (unsigned src_ev_cnt = 0; src_ev_cnt < num_ev; src_ev_cnt++) {
+		for (unsigned src_ev_cnt = 0; src_ev_cnt < batch.count; src_ev_cnt++) {
 
-			Input::Event const *e = &ev_buf[src_ev_cnt];
+			Input::Event const *e = &batch.events[src_ev_cnt];
 			Input::Event curr = *e;
 
 			if (e->absolute_motion() || e->relative_motion()) {
-				unsigned const n = num_consecutive_events(e, num_ev - src_ev_cnt);
+				unsigned const n = num_consecutive_events(e, batch.count - src_ev_cnt);
 				curr = merge_motion_events(e, n);
 
 				/* skip merged events */
@@ -332,8 +316,8 @@ User_state::handle_input_events(Input::Event const * const ev_buf,
 	button_activity |= _key_pressed();
 
 	bool key_state_affected = false;
-	for (unsigned i = 0; i < num_ev; i++)
-		key_state_affected |= (ev_buf[i].press() || ev_buf[i].release());
+	for (unsigned i = 0; i < batch.count; i++)
+		key_state_affected |= (batch.events[i].press() || batch.events[i].release());
 
 	_apply_pending_focus_change();
 
@@ -412,17 +396,13 @@ User_state::Handle_forget_result User_state::forget(View_owner const &owner)
 	_focus.forget(owner);
 
 	bool const need_to_update_all_views = (&owner == _focused);
-	bool const hover_changed = &owner == _hovered;
 	bool const focus_changed = &owner == _focused;
 
 	if (&owner == _focused)      _focused      = nullptr;
 	if (&owner == _next_focused) _next_focused = nullptr;
 	if (&owner == _last_clicked) _last_clicked = nullptr;
 
-	if (_hovered == &owner) {
-		View_component * const pointed_view = _view_stack.find_view(_pointer_pos);
-		_hovered = pointed_view ? &pointed_view->owner() : nullptr;
-	}
+	Update_hover_result const update_hover_result = update_hover();
 
 	if (_input_receiver == &owner)
 		_input_receiver = nullptr;
@@ -431,9 +411,37 @@ User_state::Handle_forget_result User_state::forget(View_owner const &owner)
 		_view_stack.update_all_views();
 
 	return {
-		.hover_changed = hover_changed,
+		.hover_changed = update_hover_result.hover_changed,
 		.focus_changed = focus_changed,
 	};
+}
+
+
+User_state::Update_hover_result User_state::update_hover()
+{
+	/* no hover changes while dragging */
+	if (_key_pressed())
+		return { .hover_changed = false };
+
+	View_owner * const old_hovered  = _hovered;
+	View const * const pointed_view = _view_stack.find_view(_pointer_pos);
+
+	_hovered = pointed_view ? &pointed_view->owner() : nullptr;
+
+	/*
+	 * Deliver a leave event if pointed-to session changed, notify newly
+	 * hovered session about the current pointer position.
+	 */
+	if (old_hovered != _hovered) {
+		if (old_hovered)
+			old_hovered->submit_input_event(Hover_leave());
+
+		if (_hovered)
+			_hovered->submit_input_event(Absolute_motion{_pointer_pos.x(),
+			                                             _pointer_pos.y()});
+	}
+
+	return { .hover_changed = (_hovered != old_hovered) };
 }
 
 

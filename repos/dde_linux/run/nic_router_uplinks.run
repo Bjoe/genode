@@ -1,4 +1,4 @@
-if {[expr ![have_spec nova] && ![have_spec sel4] && ![have_spec hw] && ![have_spec foc] || ![have_spec x86] || [have_include power_on/qemu] || [have_spec muen]]} {
+if {[expr ![have_spec nova] && ![have_spec sel4] && ![have_spec hw] && ![have_spec foc] || ![have_spec x86] || [have_include power_on/qemu] || [have_board muen]]} {
 	puts "\n Run script is not supported on this platform. \n"; exit 0 }
 
 proc wifi_ssid {} {
@@ -317,7 +317,10 @@ append config {
 	<start name="router" caps="200" priority="-2">
 		<binary name="nic_router"/>
 		<resource name="RAM" quantum="10M"/>
-		<provides><service name="Nic"/></provides>
+		<provides>
+			<service name="Nic"/>
+			<service name="Uplink"/>
+		</provides>
 		<route>
 			<service name="Nic" label="nic">
 				<child name="nic_drv"/>
@@ -347,8 +350,6 @@ append config {
 }
 
 install_config $config
-
-exec cp ${genode_dir}/repos/ports/run/virtualbox_nic_router.vbox bin/.
 
 append boot_modules {
 	iwlwifi-6000-4.ucode

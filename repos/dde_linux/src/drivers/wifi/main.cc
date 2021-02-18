@@ -93,7 +93,11 @@ void *wifi_get_buffer(void)
 
 
 /* exported by wifi.lib.so */
-extern void wifi_init(Genode::Env&, Genode::Lock&, bool, Genode::Signal_context_capability);
+extern void wifi_init(Genode::Env&,
+                      Genode::Blockade&,
+                      bool,
+                      Genode::Signal_context_capability,
+                      Genode::Nic_driver_mode);
 
 
 struct Main
@@ -103,22 +107,22 @@ struct Main
 	Genode::Constructible<Wpa_thread>     _wpa;
 	Genode::Constructible<Wifi::Frontend> _frontend;
 
-	Genode::Lock _wpa_startup_lock { Genode::Lock::LOCKED };
+	Genode::Blockade _wpa_startup_blockade { };
 
 	Main(Genode::Env &env) : env(env)
 	{
 		_frontend.construct(env);
 		_wifi_frontend = &*_frontend;
 
-		_wpa.construct(env, _wpa_startup_lock);
+		_wpa.construct(env, _wpa_startup_blockade);
 
 		/*
 		 * Forcefully disable 11n but for convenience the attribute is used the
 		 * other way araound.
 		 */
 		bool const disable_11n = !_frontend->use_11n();
-		wifi_init(env, _wpa_startup_lock, disable_11n,
-		          _frontend->rfkill_sigh());
+		wifi_init(env, _wpa_startup_blockade, disable_11n,
+		          _frontend->rfkill_sigh(), _frontend->mode());
 	}
 };
 

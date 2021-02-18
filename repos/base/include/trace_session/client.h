@@ -77,13 +77,31 @@ struct Genode::Trace::Session_client : Genode::Rpc_client<Genode::Trace::Session
 		 * \throw Out_of_ram
 		 * \throw Out_of_caps
 		 */
-		size_t subjects(Subject_id *dst, size_t dst_len)
+		virtual size_t subjects(Subject_id *dst, size_t dst_len)
 		{
 			size_t const num_subjects = min(call<Rpc_subjects>(), dst_len);
 
 			memcpy(dst, _argument_buffer.base, num_subjects*sizeof(Subject_id));
 
 			return num_subjects;
+		}
+
+		struct For_each_subject_info_result { size_t count; size_t limit; };
+
+		template <typename FN>
+		For_each_subject_info_result for_each_subject_info(FN const &fn)
+		{
+			size_t const num_subjects = call<Rpc_subject_infos>();
+			size_t const max_subjects = _argument_buffer.size / (sizeof(Subject_info) + sizeof(Subject_id));
+
+			Subject_info * const infos = reinterpret_cast<Subject_info *>(_argument_buffer.base);
+			Subject_id   * const ids   = reinterpret_cast<Subject_id *>(infos + max_subjects);
+
+			for (unsigned i = 0; i < num_subjects; i++) {
+				fn(ids[i], infos[i]);
+			}
+
+			return { .count = num_subjects, .limit = max_subjects };
 		}
 
 		Policy_id alloc_policy(size_t size) override {

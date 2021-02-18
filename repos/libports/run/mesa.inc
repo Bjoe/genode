@@ -48,23 +48,25 @@ set config {
 		<provides><service name="Timer"/></provides>
 	</start>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
-		<provides>
-			<service name="Input"/> <service name="Framebuffer"/>
-		</provides>
 	</start>
 
 	<start name="nitpicker" caps="200">
 		<resource name="RAM" quantum="2M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<config>
+			<capture/> <event/>
 			<domain name="pointer" layer="1" content="client" label="no" origin="pointer" />
 			<domain name="default" layer="2" content="client" label="no" focus="click" hover="always" />
 			<policy label_prefix="pointer" domain="pointer"/>
@@ -94,7 +96,7 @@ set launchpad_config {
 				<service name="RM"/>
 				<service name="CPU"/>
 				<service name="LOG"/>
-				<service name="Nitpicker"/>
+				<service name="Gui"/>
 				<service name="Timer"/>
 				<service name="Gpu"/>
 			</parent-provides>

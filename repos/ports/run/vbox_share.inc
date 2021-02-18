@@ -63,13 +63,13 @@ if {[have_include "power_on/qemu"]} {
 }
 
 # Tested for nova and muen.
-if {(![have_spec nova] && ![have_spec muen])} {
+if {(![have_spec nova] && ![have_board muen])} {
 	puts "Platform is unsupported."
 	exit 0
 }
 
 set virtualbox_binary "virtualbox-rem"
-if {[have_spec muen]} { set virtualbox_binary "virtualbox-muen" }
+if {[have_board muen]} { set virtualbox_binary "virtualbox-muen" }
 if {[have_spec nova]} { set virtualbox_binary "virtualbox-nova" }
 set virtualbox5_binary "virtualbox5-rem"
 if {[have_spec nova]} { set virtualbox5_binary "virtualbox5-nova" }
@@ -102,12 +102,10 @@ catch { exec dd if=/dev/urandom of=bin/test.bin bs=4096 count=8160 }
 # Step 1: prepare and start the actual VM
 #
 set build_components {
-	server/input_merger
-	server/ram_fs server/report_rom
+	server/event_filter
+	server/report_rom server/fs_rom server/vfs
 	server/tcp_terminal drivers/nic
-	lib/libc_noux
-	lib/vfs/lwip
-	noux
+	lib/vfs/lwip lib/vfs/pipe lib/vfs/import
 }
 
 #
@@ -117,10 +115,10 @@ foreach pkg {bash coreutils} {
 	lappend_if [expr ![file exists bin/$pkg]] build_components noux-pkg/$pkg }
 
 set boot_modules {
-	ram_fs
-	noux libc_noux.lib.so posix.lib.so bash.tar coreutils.tar
-	tcp_terminal vfs_lwip.lib.so ipxe_nic_drv report_rom
-	input_merger
+	vfs fs_rom
+	posix.lib.so bash.tar coreutils.tar
+	tcp_terminal vfs_lwip.lib.so vfs_pipe.lib.so vfs_import.lib.so
+	ipxe_nic_drv report_rom event_filter
 	test.bin template.bat
 }
 
@@ -137,28 +135,63 @@ set config_of_app {
 		<resource name="RAM" quantum="5M"/>
 		<provides> <service name="Terminal"/> </provides>
 		<config>
-			<policy label_prefix="noux" port="8888"/>
+			<policy label_prefix="vfs" port="8888"/>
 			<vfs>
 				<dir name="dev"> <log/> </dir>
 				<dir name="socket"> <lwip dhcp="yes"/> </dir>
+				<dir name="pipe"> <pipe/> </dir>
 			</vfs>
-			<libc stdout="/dev/log" socket="/socket" />
+			<libc stdout="/dev/log" socket="/socket" pipe="/pipe"/>
 		</config>
 	</start>
 
-	<start name="noux" priority="-1" caps="600">
-		<resource name="RAM" quantum="32M"/>
+	<start name="ram_fs_from" priority="-1">
+		<binary name="vfs"/>
+		<resource name="RAM" quantum="64M"/>
+		<provides><service name="File_system"/></provides>
 		<config>
-			<fstab>
+			<vfs>
+				<ram/>
+				<import>
+					<rom name="test.bin"/>
+					<rom name="template.bat"/>
+				</import>
+			</vfs>
+			<default-policy root="/" writeable="no"/>
+		</config>
+	</start>
+
+	<start name="ram_fs_to" priority="-1">
+		<binary name="vfs"/>
+		<resource name="RAM" quantum="64M"/>
+		<provides><service name="File_system"/></provides>
+		<config>
+			<vfs> <ram/> </vfs>
+			<default-policy root="/" writeable="yes"/>
+		</config>
+	</start>
+
+	<start name="vfs" caps="120" priority="-1">
+		<resource name="RAM" quantum="30M"/>
+		<provides><service name="File_system"/></provides>
+		<config>
+			<vfs>
 				<tar name="coreutils.tar"/>
 				<tar name="bash.tar"/>
 
 				<dir name="from"> <fs label="share_from"/> </dir>
 				<dir name="to">   <fs label="share_to"/> </dir>
-			</fstab>
-			<start name="/bin/bash">
-				<env name="TERM" value="screen"/>
-			</start>
+
+				<dir name="tmp"> <ram/> </dir>
+				<dir name="dev">
+					<zero/> <null/> <terminal/>
+					<inline name="rtc">2018-01-01 00:01</inline>
+				</dir>
+				<dir name="pipe"> <pipe/> </dir>
+			</vfs>
+
+			<policy label_prefix="vfs_rom" root="/"/>
+			<default-policy root="/" writeable="yes"/>
 		</config>
 		<route>
 			<service name="File_system" label="share_from">
@@ -171,26 +204,34 @@ set config_of_app {
 		</route>
 	</start>
 
-	<start name="ram_fs_from" priority="-1">
-		<binary name="ram_fs"/>
-		<resource name="RAM" quantum="64M"/>
-		<provides><service name="File_system"/></provides>
-		<config>
-			<content>
-				<rom name="test.bin"/>
-				<rom name="template.bat"/>
-			</content>
-			<default-policy root="/" writeable="no"/>
-		</config>
+	<start name="vfs_rom" priority="-1">
+		<resource name="RAM" quantum="30M"/>
+		<binary name="fs_rom"/>
+		<provides> <service name="ROM"/> </provides>
+		<config/>
+		<route>
+			<service name="File_system"> <child name="vfs"/> </service>
+			<any-service> <parent/> </any-service>
+		</route>
 	</start>
 
-	<start name="ram_fs_to" priority="-1">
-		<binary name="ram_fs"/>
-		<resource name="RAM" quantum="64M"/>
-		<provides><service name="File_system"/></provides>
-		<config>
-			<default-policy root="/" writeable="yes"/>
+	<start name="/bin/bash" caps="600" priority="-1">
+		<resource name="RAM" quantum="30M" />
+		<config ld_verbose="yes">
+			<libc stdin="/dev/terminal" stdout="/dev/terminal"
+			      stderr="/dev/terminal" rtc="/dev/rtc" pipe="/pipe"/>
+			<vfs> <fs/> </vfs>
+			<arg value="bash"/>
+			<env key="TERM" value="screen"/>
+			<env key="PATH" value="/bin" />
 		</config>
+		<route>
+			<service name="File_system"> <child name="vfs"/> </service>
+			<service name="ROM" label_suffix=".lib.so"> <parent/> </service>
+			<service name="ROM" label_last="/bin/bash"> <child name="vfs_rom"/> </service>
+			<service name="ROM" label_prefix="/bin"> <child name="vfs_rom"/> </service>
+			<any-service> <parent/> <any-child/> </any-service>
+		</route>
 	</start>
 
 	<start name="report_rom" priority="-1">
@@ -205,38 +246,44 @@ set config_of_app {
 		</config>
 	</start>
 
-	<start name="input_merger" priority="-1">
+	<start name="event_filter" priority="-1">
 		<resource name="RAM" quantum="1M" />
 		<provides>
-			<service name="Input" />
+			<service name="Event" />
 		</provides>
-		<config>}
+		<config>
+			<output>
+				<merge>}
 append_if [expr $use_ps2] config_of_app {
-			<input label="ps2" /> }
+					<input name="ps2"/>}
 append_if [expr $use_usb] config_of_app {
-			<input label="usb_hid" />}
+					<input name="usb_hid"/>}
+append config_of_app {
+				</merge>
+			</output>}
+append_if [expr $use_ps2] config_of_app {
+			<policy label="ps2" input="ps2"/>}
+append_if [expr $use_usb] config_of_app {
+			<policy label="usb_hid" input="usb_hid"/>}
 append config_of_app {
 		</config>
-		<route> }
-append_if [expr $use_ps2] config_of_app {
-			<service name="Input" label="ps2"> <child name="ps2_drv" /> </service> }
-append_if [expr $use_usb] config_of_app {
-			<service name="Input" label="usb_hid"> <child name="usb_drv" /> </service> }
-append config_of_app {
+		<route>
+			<service name="Event"> <child name="nitpicker"/> </service>
 			<any-service> <parent /> <any-child /> </any-service>
 		</route>
 	</start>
 
 	<start name="nitpicker" priority="-1">
 		<resource name="RAM" quantum="12M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<route>
-			<service name="Framebuffer"> <child name="fb_drv" /> </service>
-			<service name="Input"> <child name="input_merger" /> </service>
 			<service name="Report"> <child name="report_rom" /> </service>
 			<any-service> <parent/> <any-child /> </any-service>
 		</route>
 		<config>
+			<capture/> <event/>
 			<report focus="yes" hover="yes" />
 
 			<domain name="pointer"  layer="1" content="client" label="no" origin="pointer" />
@@ -254,7 +301,7 @@ append config_of_app {
 		<provides> <service name="Report"/> </provides>
 		<config shapes="yes"/>
 		<route>
-			<service name="Nitpicker"> <child name="nitpicker"/>  </service>
+			<service name="Gui"> <child name="nitpicker"/>  </service>
 			<service name="ROM" label="hover"> <child name="report_rom"/> </service>
 			<service name="ROM" label="xray"> <child name="report_rom"/> </service>
 			<any-service> <parent/> </any-service>
@@ -267,9 +314,12 @@ append_if [expr $use_vbox5] config_of_app "
 append config_of_app {
 		<resource name="RAM" quantum="1280M"/>
 		<config vbox_file="} $vbox_file {" vm_name="AutoDisk">
-			<libc stdout="/dev/log" stderr="/dev/log" rtc="/dev/rtc"/>
+			<libc stdout="/dev/log" stderr="/dev/log" rtc="/dev/rtc" pipe="/pipe"/>
 			<vfs>
-				<dir name="dev"> <log/> <rtc/> </dir>
+				<dir name="dev">
+					<log/> <rtc/>
+				 </dir>
+				<dir name="pipe"> <pipe/> </dir>
 				<rom name="} $vbox_file {"/>}
 
 append_if [expr $use_ram_fs] config_of_app {
@@ -297,7 +347,6 @@ append config_of_app {
 				<child name="ram_fs_to"/>
 			</service>
 			<service name="File_system"> <child name="rump_fs"/> </service>
-			<service name="Input"> <child name="input_merger"/> </service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
@@ -334,37 +383,37 @@ run_genode_until {\[init -\> vbox1\].*Guest Additions capability report:.*seamle
 puts "\nTest shared folder\n"
 
 spawn netcat $serial_ip_addr 8888
-set noux_id $spawn_id
-set spawn_id_list [list $noux_id $serial_id]
+set netcat_id $spawn_id
+set spawn_id_list [list $netcat_id $serial_id]
 
 run_genode_until {\[init -> tcp_terminal\] connection established} 20 $spawn_id_list
 
 #
-# Step 5 : interact with netcat -> ... -> tcp_terminal -> Noux -> bash
+# Step 5 : interact with netcat -> ... -> tcp_terminal -> /bin/bash
 #
 
 # Windows does not like trailing zeros introduced by our ROM service.
 # -> .bat script does not find labels like 'check' with zero bytes
 # so - delete zero bytes
-puts $noux_id "cat from/template\.bat | tr -d \"\\0\" >to/test\.bat"
+puts $netcat_id "cat from/template\.bat | tr -d \"\\0\" >to/test\.bat"
 
 # SHA1 of original file
-puts $noux_id "sha1sum from/test.bin"
+puts $netcat_id "sha1sum from/test.bin"
 
 # Tell Windows VM to start copying
-puts $noux_id "echo \"start\" > to/start\.txt"
+puts $netcat_id "echo \"start\" > to/start\.txt"
 
 # Wait until Windows finished copying
-puts $noux_id "while \[ ! -f to/done\.txt ]"
-puts $noux_id "do"
-puts $noux_id "sleep 5"
-puts $noux_id "done"
+puts $netcat_id "while \[ ! -f to/done\.txt ]"
+puts $netcat_id "do"
+puts $netcat_id "sleep 5"
+puts $netcat_id "done"
 
 # Wait until VM signaled shutdown state
 run_genode_until {\[init\] child "vbox1" exited with exit value 0} 120 $spawn_id_list
 
 # SHA1 of copied file
-puts $noux_id "sha1sum to/test.bin"
+puts $netcat_id "sha1sum to/test.bin"
 
 # Wait for output of bash shell until last SHA1 sum is calculated
 run_genode_until {[[:xdigit:]]+  to/test\.bin} 50 $spawn_id_list

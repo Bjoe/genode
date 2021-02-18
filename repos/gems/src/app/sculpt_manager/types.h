@@ -18,7 +18,7 @@
 #include <base/env.h>
 #include <base/attached_rom_dataspace.h>
 #include <platform_session/platform_session.h>
-#include <nitpicker_session/nitpicker_session.h>
+#include <gui_session/gui_session.h>
 #include <usb_session/usb_session.h>
 #include <log_session/log_session.h>
 #include <rm_session/rm_session.h>
@@ -42,9 +42,9 @@ namespace Sculpt {
 	typedef String<36>  Start_name;
 	typedef String<64>  Label;
 
-	typedef Nitpicker::Point Point;
-	typedef Nitpicker::Rect  Rect;
-	typedef Nitpicker::Area  Area;
+	typedef Gui::Point Point;
+	typedef Gui::Rect  Rect;
+	typedef Gui::Area  Area;
 
 	enum Writeable { WRITEABLE, READ_ONLY };
 }

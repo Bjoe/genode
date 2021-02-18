@@ -38,7 +38,6 @@ namespace Genode {
 	void init_root_proxy(Env &);
 	void init_tracing(Env &);
 	void init_log(Parent &);
-	void init_exit(Parent &);
 	void init_parent_resource_requests(Env &);
 	void init_heartbeat_monitoring(Env &);
 	void deinit_heartbeat_monitoring();
@@ -52,6 +51,8 @@ namespace Genode {
 
 	Id_space<Parent::Client> &env_session_id_space();
 	Env &internal_env();
+
+	void binary_ready_hook_for_platform();
 }
 
 void genode_exit(int);

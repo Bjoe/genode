@@ -40,28 +40,6 @@ inline void Libc::Main_blockade::wakeup()
 }
 
 
-/**
- * Main context execution was suspended (on fork)
- *
- * This function is executed in the context of the initial thread.
- */
-static void suspended_callback()
-{
-	Libc::Kernel::kernel().entrypoint_suspended();
-}
-
-
-/**
- * Resume main context execution (after fork)
- *
- * This function is executed in the context of the initial thread.
- */
-static void resumed_callback()
-{
-	Libc::Kernel::kernel().entrypoint_resumed();
-}
-
-
 size_t Libc::Kernel::_user_stack_size()
 {
 	size_t size = Component::stack_size();
@@ -72,31 +50,6 @@ size_t Libc::Kernel::_user_stack_size()
 		size = stack.attribute_value("size", 0UL); });
 
 	return size;
-}
-
-
-void Libc::Kernel::schedule_suspend(void(*original_suspended_callback) ())
-{
-	if (_state != USER) {
-		error(__PRETTY_FUNCTION__, " called from non-user context");
-		return;
-	}
-
-	/*
-	 * We hook into suspend-resume callback chain to destruct and
-	 * reconstruct parts of the kernel from the context of the initial
-	 * thread, i.e., without holding any object locks.
-	 */
-	_original_suspended_callback = original_suspended_callback;
-	_env.ep().schedule_suspend(suspended_callback, resumed_callback);
-
-	if (!_setjmp(_user_context)) {
-		_valid_user_context = true;
-		_suspend_scheduled = true;
-		_switch_to_kernel();
-	} else {
-		_valid_user_context = false;
-	}
 }
 
 
@@ -116,27 +69,137 @@ void Libc::Kernel::reset_malloc_heap()
 
 void Libc::Kernel::_init_file_descriptors()
 {
+	/**
+	 * path element token
+	 */
+	struct Scanner_policy_path_element
+	{
+		static bool identifier_char(char c, unsigned /* i */)
+		{
+			return (c != '/') && (c != 0);
+		}
+	};
+	typedef Genode::Token<Scanner_policy_path_element> Path_element_token;
+
+	auto resolve_symlinks = [&] (Absolute_path next_iteration_working_path, Absolute_path &resolved_path)
+	{
+		char path_element[PATH_MAX];
+		char symlink_target[PATH_MAX];
+
+		Absolute_path current_iteration_working_path;
+
+		enum { FOLLOW_LIMIT = 10 };
+		int follow_count = 0;
+		bool symlink_resolved_in_this_iteration;
+		do {
+			if (follow_count++ == FOLLOW_LIMIT) {
+				errno = ELOOP;
+				throw Symlink_resolve_error();
+			}
+
+			current_iteration_working_path = next_iteration_working_path;
+
+			next_iteration_working_path.import("");
+			symlink_resolved_in_this_iteration = false;
+
+			Path_element_token t(current_iteration_working_path.base());
+
+			while (t) {
+				if (t.type() != Path_element_token::IDENT) {
+						t = t.next();
+						continue;
+				}
+
+				t.string(path_element, sizeof(path_element));
+
+				try {
+					next_iteration_working_path.append_element(path_element);
+				} catch (Path_base::Path_too_long) {
+					errno = ENAMETOOLONG;
+					throw Symlink_resolve_error();
+				}
+
+				/*
+				 * If a symlink has been resolved in this iteration, the remaining
+				 * path elements get added and a new iteration starts.
+				 */
+				if (!symlink_resolved_in_this_iteration) {
+					struct stat stat_buf;
+					int res = _vfs.stat_from_kernel(next_iteration_working_path.base(), &stat_buf);
+					if (res == -1) {
+						throw Symlink_resolve_error();
+					}
+					if (S_ISLNK(stat_buf.st_mode)) {
+						res = readlink(next_iteration_working_path.base(),
+						               symlink_target, sizeof(symlink_target) - 1);
+						if (res < 1)
+							throw Symlink_resolve_error();
+
+						/* zero terminate target */
+						symlink_target[res] = 0;
+
+						if (symlink_target[0] == '/')
+							/* absolute target */
+							next_iteration_working_path.import(symlink_target, _cwd.base());
+						else {
+							/* relative target */
+							next_iteration_working_path.strip_last_element();
+							try {
+								next_iteration_working_path.append_element(symlink_target);
+							} catch (Path_base::Path_too_long) {
+								errno = ENAMETOOLONG;
+								throw Symlink_resolve_error();
+							}
+						}
+						symlink_resolved_in_this_iteration = true;
+					}
+				}
+
+				t = t.next();
+			}
+
+		} while (symlink_resolved_in_this_iteration);
+
+		resolved_path = next_iteration_working_path;
+		resolved_path.remove_trailing('/');
+	};
+
+	typedef String<Vfs::MAX_PATH_LEN> Path;
+
+	auto resolve_absolute_path = [&] (Path const &path)
+	{
+		Absolute_path abs_path { };
+		Absolute_path abs_dir(path.string(), _cwd.base());   abs_dir.strip_last_element();
+		Absolute_path dir_entry(path.string(), _cwd.base()); dir_entry.keep_only_last_element();
+
+		try {
+			resolve_symlinks(abs_dir, abs_path);
+			abs_path.append_element(dir_entry.string());
+			return abs_path;
+		} catch (Path_base::Path_too_long) { return Absolute_path(); }
+	};
+
 	auto init_fd = [&] (Xml_node const &node, char const *attr,
 	                    int libc_fd, unsigned flags)
 	{
 		if (!node.has_attribute(attr))
 			return;
 
-		typedef String<Vfs::MAX_PATH_LEN> Path;
-		Path const path = node.attribute_value(attr, Path());
+		Absolute_path const path {
+			resolve_absolute_path(node.attribute_value(attr, Path())) };
 
 		struct stat out_stat { };
-		if (stat(path.string(), &out_stat) != 0)
+		if (_vfs.stat_from_kernel(path.string(), &out_stat) != 0)
 			return;
 
-		File_descriptor *fd = _vfs.open(path.string(), flags, libc_fd);
+		File_descriptor *fd = _vfs.open_from_kernel(path.string(), flags, libc_fd);
 		if (!fd)
 			return;
 
 		if (fd->libc_fd != libc_fd) {
 			error("could not allocate fd ",libc_fd," for ",path,", "
 			      "got fd ",fd->libc_fd);
-			_vfs.close(fd);
+			_vfs.close_from_kernel(fd);
 			return;
 		}
 
@@ -151,14 +214,14 @@ void Libc::Kernel::_init_file_descriptors()
 			warning("may leak former FD path memory");
 
 		{
-			char *dst = (char *)_heap.alloc(path.length());
-			Genode::strncpy(dst, path.string(), path.length());
+			char *dst = (char *)_heap.alloc(path.max_len());
+			copy_cstring(dst, path.string(), path.max_len());
 			fd->fd_path = dst;
 		}
 
 		::off_t const seek = node.attribute_value("seek", 0ULL);
 		if (seek)
-			_vfs.lseek(fd, seek, SEEK_SET);
+			_vfs.lseek_from_kernel(fd, seek);
 	};
 
 	if (_vfs.root_dir_has_dirents()) {
@@ -168,7 +231,7 @@ void Libc::Kernel::_init_file_descriptors()
 		typedef String<Vfs::MAX_PATH_LEN> Path;
 
 		if (node.has_attribute("cwd"))
-			chdir(node.attribute_value("cwd", Path()).string());
+			_cwd.import(node.attribute_value("cwd", Path()).string(), _cwd.base());
 
 		init_fd(node, "stdin",  0, O_RDONLY);
 		init_fd(node, "stdout", 1, O_WRONLY);
@@ -285,6 +348,7 @@ void Libc::Kernel::_clone_state_from_parent()
 
 	/* fetch user contex of the parent's application */
 	_clone_connection->memory_content(&_user_context, sizeof(_user_context));
+	_clone_connection->memory_content(&_main_monitor_job, sizeof(_main_monitor_job));
 	_valid_user_context = true;
 
 	_libc_env.libc_config().for_each_sub_node([&] (Xml_node node) {
@@ -323,28 +387,18 @@ void Libc::Kernel::_clone_state_from_parent()
 }
 
 
-extern void (*libc_select_notify)();
+extern void (*libc_select_notify_from_kernel)();
 
 
 void Libc::Kernel::handle_io_progress()
 {
-	/*
-	 * TODO: make VFS I/O completion checks during
-	 * kernel time to avoid flapping between stacks
-	 */
+	if (_io_progressed) {
+		_io_progressed = false;
 
-	if (_io_ready) {
-		_io_ready = false;
-
-		/* some contexts may have been deblocked from select() */
-		if (libc_select_notify)
-			libc_select_notify();
-
-		/*
-		 * resume all as any VFS context may have
-		 * been deblocked from blocking I/O
-		 */
 		Kernel::resume_all();
+
+		if (_execute_monitors_pending == Monitor::Pool::State::JOBS_PENDING)
+			_execute_monitors_pending = _monitors.execute_monitors();
 	}
 }
 
@@ -395,10 +449,13 @@ Libc::Kernel::Kernel(Genode::Env &env, Genode::Allocator &heap)
 :
 	_env(env), _heap(heap)
 {
+	init_atexit(_atexit);
+
 	atexit(close_file_descriptors_on_exit);
 
 	init_semaphore_support(_timer_accessor);
-	init_pthread_support(*this, *this, _timer_accessor);
+	init_pthread_support(*this, _timer_accessor);
+	init_pthread_support(env.cpu(), _pthread_config());
 
 	_env.ep().register_io_progress_handler(*this);
 
@@ -410,16 +467,17 @@ Libc::Kernel::Kernel(Genode::Env &env, Genode::Allocator &heap)
 		init_malloc(*_malloc_heap);
 	}
 
-	init_fork(_env, _libc_env, _heap, *_malloc_heap, _pid, *this, *this, _signal,
-	          *this, _binary_name);
+	init_fork(_env, _libc_env, _heap, *_malloc_heap, _pid, *this, _signal,
+	          _binary_name);
 	init_execve(_env, _heap, _user_stack, *this, _binary_name,
 	            *file_descriptor_allocator());
 	init_plugin(*this);
 	init_sleep(*this);
-	init_vfs_plugin(*this);
-	init_time(*this, _rtc_path, *this);
-	init_select(*this, *this, *this, _signal);
-	init_socket_fs(*this);
+	init_vfs_plugin(*this, _env.rm());
+	init_file_operations(*this, _libc_env);
+	init_time(*this, *this);
+	init_select(*this, _signal, *this);
+	init_socket_fs(*this, *this);
 	init_passwd(_passwd_config());
 	init_signal(_signal);
 

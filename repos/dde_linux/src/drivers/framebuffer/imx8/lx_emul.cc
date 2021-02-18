@@ -14,10 +14,11 @@
  */
 
 /* Genode includes */
-#include <base/attached_io_mem_dataspace.h>
+#include <base/attached_dataspace.h>
+#include <platform_session/connection.h>
 
 /* local includes */
-#include <component.h>
+#include <driver.h>
 
 #include <lx_emul.h>
 #include <lx_emul_c.h>
@@ -29,9 +30,12 @@
 #include <drm/drm_gem_cma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_of.h>
+#include <drm/drm_panel.h>
 #include "drm_crtc_internal.h"
 #include "drm_internal.h"
 #include <linux/component.h>
+#include <linux/phy/phy.h>
+#include <video/videomode.h>
 #include <lx_emul/extern_c_end.h>
 
 #include <lx_kit/scheduler.h> /* dependency of lx_emul/impl/completion.h */
@@ -50,6 +54,58 @@
 
 #include <lx_kit/irq.h>
 #include <lx_kit/malloc.h>
+
+enum Device_id { DCSS, HDMI, MIPI, SRC, UNKNOWN };
+
+namespace Lx_kit {
+	Platform::Connection    & platform_connection();
+	Platform::Device_client & platform_device(Device_id);
+}
+
+
+Platform::Connection & Lx_kit::platform_connection()
+{
+	static Platform::Connection plat { Lx_kit::env().env() };
+	return plat;
+}
+
+
+Platform::Device_client & Lx_kit::platform_device(Device_id id)
+{
+	if (id == DCSS) {
+		static Platform::Device_client dcss {
+			platform_connection().device_by_property("compatible",
+			                                         "nxp,imx8mq-dcss") };
+		return dcss;
+	}
+
+	if (id == HDMI) {
+		static Platform::Device_client hdmi {
+			platform_connection().device_by_property("compatible",
+			                                         "fsl,imx8mq-hdmi") };
+		return hdmi;
+	}
+
+	if (id == MIPI) {
+		static Platform::Device_client mipi {
+			platform_connection().device_by_property("compatible",
+			                                         "fsl,imx8mq-mipi-dsi_drm") };
+		static bool update = true;
+		if (update) {
+			platform_connection().update();
+			update = false;
+		}
+		return mipi;
+	}
+
+	if (id == SRC){
+		static Platform::Device_client src {
+			platform_connection().acquire_device("src") };
+		return src;
+	}
+
+	throw 1;
+}
 
 
 /********************************
@@ -115,6 +171,9 @@ struct resource *platform_get_resource_byname(struct platform_device *dev,
 		return r;
 	}
 
+	if (DEBUG_DRIVER)
+		Genode::error("RESOURCE: ", name, " not found");
+
 	return NULL;
 }
 
@@ -124,7 +183,6 @@ static int platform_match(struct device *dev, struct device_driver *drv)
 	if (!dev->name)
 		return 0;
 
-	printk("MATCH %s %s\n", dev->name, drv->name);
 	return (Genode::strcmp(dev->name, drv->name) == 0);
 }
 
@@ -184,7 +242,9 @@ int platform_device_add_data(struct platform_device *pdev, const void *data,
 
 int platform_device_register(struct platform_device *pdev)
 {
-	pdev->dev.bus  = &platform_bus_type;
+	if (pdev->dev.bus == nullptr)
+		pdev->dev.bus  = &platform_bus_type;
+
 	pdev->dev.name = pdev->name;
 	/*Set parent to ourselfs */
 	if (!pdev->dev.parent)
@@ -237,8 +297,16 @@ int clk_set_rate(struct clk *clk, unsigned long rate)
 	if (DEBUG_DRIVER)
 		Genode::warning(__func__, "() not implemented");
 
+
 	if (!clk) return -1;
 	clk->rate = rate;
+	return 0;
+}
+
+
+int clk_prepare_enable(struct clk *clk)
+{
+	TRACE;
 	return 0;
 }
 
@@ -251,23 +319,37 @@ struct clk *devm_clk_get(struct device *dev, const char *id)
 {
 	/* numbers from running Linux system */
 
-	static struct clk clocks[] {
-		{ "apb", 133333334 },
-		{ "axi", 800000000 },
-		{ "ipg", 133333334 },
-		{ "pix", 27000000 },
-		{ "rtrm", 400000000 },
-		{ "dtrc", 25000000 },
-	};
+	using namespace Genode;
 
-	for (unsigned i = 0; i < (sizeof(clocks) / sizeof(struct clk)); i++)
-		if (Genode::strcmp(clocks[i].name, id) == 0)
-			return &clocks[i];
+	const char * clock_name = id;
+	if (String<32>("ipg") == id) { clock_name = "apb"; }
+	if (String<32>("tx_esc") == id) { clock_name = "rx_esc"; }
 
-	if (DEBUG_DRIVER)
-		Genode::warning("MISSING CLOCK: ", id);
+	unsigned long rate = 0;
+	Lx_kit::platform_connection().with_xml([&] (Xml_node node) {
+		node.for_each_sub_node("device", [&] (Xml_node node) {
+			node.for_each_sub_node("clock", [&] (Xml_node node) {
+				if (node.attribute_value("name", String<64>()) != clock_name) {
+					return; }
+				rate = node.attribute_value<unsigned long>("rate", 0);
+			});
+		});
+	});
 
-	return nullptr;
+	if (!rate) {
+		if (DEBUG_DRIVER)
+			Genode::error(__func__, " clock not found ", id);
+		return nullptr;
+	}
+
+	struct clk * clock = (struct clk*) kzalloc(sizeof(struct clk), GFP_KERNEL);
+	clock->name = id;
+	clock->rate = rate;
+
+	if (String<32>("tx_esc") == id)
+		clock->rate /= 4;
+
+	return clock;
 }
 
 
@@ -358,7 +440,24 @@ static struct device_node endpoint_device_node {
 
 static struct device_node port_device_node {
 	.name = "port",
-	.full_name = "port"
+	.full_name = "port",
+};
+
+static struct device_node mipi_endpoint_device_node {
+	.name = "mipi-endpoint",
+	.full_name = "mipi-endpoint",
+	.parent = &root_device_node
+};
+
+static struct device_node mipi_device_node {
+	.name = "mipi_dsi",
+	.full_name = "mipi_dsi",
+	.parent = &root_device_node
+};
+
+static struct device_node mipi_panel_node {
+	.name      = "panel",
+	.full_name = "panel"
 };
 
 int of_device_is_compatible(const struct device_node *device,
@@ -377,14 +476,56 @@ struct device_node *of_get_next_child(const struct device_node *node,
                                       struct device_node *prev)
 {
 	if (Genode::strcmp(node->name, "port", strlen(node->name)) == 0) {
-		if (!prev)
-			return &hdmi_endpoint_device_node;
-		return NULL;
+		if (prev)
+			return NULL;
+
+		if (port_device_node.parent == &mipi_device_node) {
+			return &port_device_node;
+		}
+
+		return &hdmi_endpoint_device_node;
 	}
 
-	Genode::error("of_get_next_child(): unhandled node");
+	if (Genode::strcmp(node->name, "mipi_dsi_bridge") == 0) {
+		if (prev) return NULL;
+		/* create panel device node */
+
+		device_node *np = &mipi_panel_node;
+		np->properties = (property *)kzalloc(6*sizeof(property), 0);
+		np->properties[0].name  = "panel",
+		np->properties[0].value = NULL,
+		np->properties[0].next  = &np->properties[1];
+		np->properties[1].name  = "reg";
+		np->properties[1].value = 0;
+		np->properties[1].next  = &np->properties[2];
+		np->properties[2].name  = "compatible";
+		np->properties[2].value = (void *)"raydium,rm67191";
+		np->properties[2].next  = &np->properties[3];
+		np->properties[3].name  = "dsi-lanes";
+		np->properties[3].value = (void *)4;
+		np->properties[3].next  = &np->properties[4];
+		np->properties[4].name  = "panel-width-mm";
+		np->properties[4].value = (void *)68;
+		np->properties[4].next  = &np->properties[5];
+		np->properties[5].name  = "panel-height-mm";
+		np->properties[5].value = (void *)121;
+
+		return np;
+	}
+
+	if (DEBUG_DRIVER)
+		Genode::error("of_get_next_child(): unhandled node");
 
 	return NULL;
+}
+
+struct device_node *of_get_child_by_name(const struct device_node *node,
+                                         const char *name)
+{
+	if (Genode::strcmp(name, "display-timings") == 0)
+		return (device_node *)1;
+
+	return nullptr;
 }
 
 struct device_node *of_get_parent(const struct device_node *node)
@@ -396,20 +537,36 @@ struct device_node *of_get_parent(const struct device_node *node)
 
 	if (Genode::strcmp(node->name, "port", strlen("port")) == 0)
 		return &dcss_device_node;
-	
-	Genode::error("of_get_parent(): unhandled node");
+
+	if (DEBUG_DRIVER)
+		Genode::error("of_get_parent(): unhandled node");
 
 	return NULL;
 }
 
 const void *of_get_property(const struct device_node *node, const char *name, int *lenp)
 {
-	for (property * p = node ? node->properties : nullptr; p; p = p->next)
-		if (Genode::strcmp(name, p->name) == 0) return p->value;
+	*lenp = 0;
+	for (property * p = node ? node->properties : nullptr; p; p = p->next) {
+		if (!p) break;
+		if (Genode::strcmp(name, p->name) == 0) {
+			*lenp = sizeof(void *);
+			return p->value;
+		}
+	}
 
-	if (DEBUG_DRIVER) Genode::warning("OF property ", name, " not found");
+	if (DEBUG_DRIVER)
+		Genode::warning("OF property ", name, " not found");
 	return nullptr;
 }
+
+
+int of_alias_get_id(struct device_node *np, const char *stem)
+{
+	int len = 0;
+	return (long)of_get_property(np, stem, &len);
+}
+
 
 struct device_node *of_parse_phandle(const struct device_node *np, const char *phandle_name, int index)
 {
@@ -437,6 +594,50 @@ struct device_node *of_parse_phandle(const struct device_node *np, const char *p
 }
 
 
+struct property *of_find_property(const struct device_node *np,
+                                  const char *name, int *lenp)
+{
+	TRACE;
+	return np->properties;
+}
+
+
+int of_modalias_node(struct device_node *node, char *modalias, int len)
+{
+	TRACE;
+	return 0;
+}
+
+
+/**************************
+ ** linux/of_videomode.h **
+ **************************/
+
+int of_get_videomode(struct device_node *np, struct videomode *vm, int index)
+{
+	/* taken from device tree */
+	if (Genode::strcmp(np->name, "panel") == 0) {
+		vm->pixelclock   = 0x7de2900;
+		vm->hactive      = 0x438;
+		vm->hfront_porch = 0x14;
+		vm->hback_porch  = 0x22;
+		vm->hsync_len    = 0x2;
+
+		vm->vactive      = 0x780;
+		vm->vfront_porch = 0x1e;
+		vm->vback_porch  = 0x4;
+		vm->vsync_len    = 0x2;
+
+		vm->flags = (display_flags)0x1095;
+
+		return 0;
+	}
+
+	return -1;
+}
+
+
+
 /*************************
  ** drivers/of/device.c **
  *************************/
@@ -454,13 +655,23 @@ const void *of_device_get_match_data(const struct device *dev)
 const struct of_device_id *of_match_device(const struct of_device_id *matches,
                                            const struct device *dev)
 {
-	const char * compatible = (const char*) of_get_property(dev->of_node, "compatible", 0);
+	int len = 0;
+	const char * compatible = (const char*) of_get_property(dev->of_node, "compatible", &len);
 
 	for (; matches && matches->compatible[0]; matches++) {
 		if (Genode::strcmp(matches->compatible, compatible) == 0)
 			return matches;
 	}
 	return nullptr;
+}
+
+
+int of_driver_match_device(struct device *dev, const struct device_driver *drv)
+{
+	if (of_match_device(drv->of_match_table, dev))
+		return 1;
+
+	return 0;
 }
 
 
@@ -479,7 +690,16 @@ struct device_node *of_graph_get_next_endpoint(const struct device_node *parent,
 		return nullptr;
 	}
 
-	Genode::error(__func__, "(): unhandled parent");
+	if(Genode::strcmp(parent->name, "mipi_dsi", strlen(parent->name)) == 0) {
+
+		if (!prev)
+			return &mipi_endpoint_device_node;
+
+		return nullptr;
+	}
+
+	if (DEBUG_DRIVER)
+		Genode::error(__func__, "(): unhandled parent '", parent->name, "'");
 
 	return nullptr;
 }
@@ -490,7 +710,8 @@ struct device_node *of_graph_get_port_by_id(struct device_node *parent, u32 id)
 	    (id == 0))
 		return &port_device_node;
 
-	Genode::error("of_graph_get_port_by_id(): unhandled parent or id\n");
+	if (DEBUG_DRIVER)
+		Genode::error("of_graph_get_port_by_id(): unhandled parent or id\n");
 
 	return NULL;
 }
@@ -500,7 +721,12 @@ struct device_node *of_graph_get_remote_port(const struct device_node *node)
 	if (Genode::strcmp(node->name, "endpoint", strlen(node->name)) == 0)
 		return &port_device_node;
 
-	Genode::error("of_graph_get_remote_port(): unhandled node\n");
+	if (Genode::strcmp(node->name, "mipi-endpoint", strlen(node->name)) == 0) {
+		return &port_device_node;
+	}
+
+	if (DEBUG_DRIVER)
+		Genode::error("of_graph_get_remote_port(): unhandled node '", node->name, "'\n");
 
 	return NULL;
 }
@@ -510,7 +736,18 @@ struct device_node *of_graph_get_remote_port_parent(const struct device_node *no
 	if (Genode::strcmp(node->name, "hdmi-endpoint") == 0)
 		return &hdmi_device_node;
 
-	Genode::error("of_graph_get_remote_port_parent(): unhandled node");
+	if (Genode::strcmp(node->name, "mipi-endpoint") == 0) {
+
+		int len;
+		void const *np = of_get_property(&mipi_endpoint_device_node, "mipi_dsi_bridge_np", &len);
+		return (device_node *)np;
+	}
+
+	if (Genode::strcmp(node->name, "port") == 0)
+		return &mipi_device_node;
+
+	if (DEBUG_DRIVER)
+		Genode::error("of_graph_get_remote_port_parent(): unhandled node: ", node->name);
 
 	return NULL;
 }
@@ -564,8 +801,8 @@ void irq_set_chained_handler_and_data(unsigned int irq,
 	irqsteer_irq_desc.irq_data.chip = irqsteer_chip;
 	irqsteer_irq_desc.handle_irq = handle;
 
-	Lx::Irq::irq().request_irq(Platform::Device::create(Lx_kit::env().env(), irq),
-	                           irq, irqsteer_irq_handler, nullptr, nullptr);
+	Lx::Irq::irq().request_irq(Lx_kit::platform_device(DCSS).irq(), irq,
+	                           irqsteer_irq_handler, nullptr, nullptr);
 }
 
 
@@ -583,7 +820,16 @@ int devm_request_threaded_irq(struct device *dev, unsigned int irq,
 		return -1;
 	}
 
-	Lx::Irq::irq().request_irq(Platform::Device::create(Lx_kit::env().env(), irq),
+	Device_id id = UNKNOWN;
+	unsigned off = 0;
+	switch (irq) {
+	case IRQ_IRQSTEER: id = DCSS; break;
+	case IRQ_HDMI_IN:  id = HDMI; break;
+	case IRQ_HDMI_OUT: id = HDMI; off = 1; break;
+	default: Genode::error(__func__, " IRQ: ", irq, " not found");
+	};
+
+	Lx::Irq::irq().request_irq(Lx_kit::platform_device(id).irq(off),
 	                           irq, handler, dev_id, thread_fn);
 
 	return 0;
@@ -699,14 +945,69 @@ int disable_irq_nosync(unsigned int irq)
 
 static void *_ioremap(phys_addr_t phys_addr, unsigned long size, int wc)
 {
-	try {
-		Genode::Attached_io_mem_dataspace *ds = new(Lx::Malloc::mem())
-			Genode::Attached_io_mem_dataspace(Lx_kit::env().env(), phys_addr, size, !!wc);
-		return ds->local_addr<void>();
-	} catch (...) {
-		panic("Failed to request I/O memory: [%lx,%lx)", phys_addr, phys_addr + size);
-		return 0;
+	using namespace Genode;
+
+	Region_map & rm = Lx_kit::env().env().rm();
+
+	if (phys_addr          >= IOMEM_BASE_DCSS &&
+		(phys_addr+size-1) <= IOMEM_END_DCSS) {
+		static Attached_dataspace ds {
+			rm, Lx_kit::platform_device(DCSS).io_mem_dataspace() };
+		addr_t off = phys_addr - IOMEM_BASE_DCSS;
+		return (void*)(((addr_t)ds.local_addr<void>()) + off);
+	};
+
+	if (phys_addr          >= IOMEM_BASE_HDMI_CTRL &&
+		(phys_addr+size-1) <= IOMEM_END_HDMI_RST) {
+		switch (phys_addr) {
+			case IOMEM_BASE_HDMI_CTRL:
+				{
+					static Attached_dataspace ds {
+						rm, Lx_kit::platform_device(HDMI).io_mem_dataspace(0) };
+					return ds.local_addr<void>();
+				}
+			case IOMEM_BASE_HDMI_CRS:
+				{
+					static Attached_dataspace ds {
+						rm, Lx_kit::platform_device(HDMI).io_mem_dataspace(1) };
+					return ds.local_addr<void>();
+				}
+			case IOMEM_BASE_HDMI_RST:
+				{
+					static Attached_dataspace ds {
+						rm, Lx_kit::platform_device(HDMI).io_mem_dataspace(2) };
+					return ds.local_addr<void>();
+				}
+			default: ;
+		};
+	};
+
+	if (phys_addr >= IOMEM_BASE_MIPI_DSI &&
+	   (phys_addr+size-1) <= IOMEM_END_MIPI_DSI) {
+
+		/*
+		 * Set parent of 'port' to 'mipi_dsi' in order to distinguish between HDMI
+		 * and MIPI
+		 */
+		port_device_node.parent = &mipi_device_node;
+
+		static Attached_dataspace ds {
+			rm, Lx_kit::platform_device(MIPI).io_mem_dataspace(0) };
+		addr_t off = phys_addr - IOMEM_BASE_MIPI_DSI;
+
+		return (void*)(((addr_t)ds.local_addr<void>()) + off);
 	}
+
+	if (phys_addr >= IOMEM_BASE_SRC &&
+	   (phys_addr+size-1) <= IOMEM_END_SRC) {
+		static Attached_dataspace ds {
+			rm, Lx_kit::platform_device(SRC).io_mem_dataspace(0) };
+		return ds.local_addr<void>();
+	}
+
+	panic("Failed to request I/O memory: [%lx,%lx)\n",
+	      phys_addr, phys_addr + size);
+	return nullptr;
 }
 
 void *devm_ioremap(struct device *dev, resource_size_t offset,
@@ -719,6 +1020,46 @@ void *devm_ioremap_resource(struct device *dev, struct resource *res)
 {
 	return _ioremap(res->start, (res->end - res->start) + 1, 0);
 }
+
+
+/************************
+ ** linux/mfd/syscon.h **
+ ************************/
+
+struct regmap *syscon_regmap_lookup_by_phandle( struct device_node *np, const char *property)
+{
+	bool src = strcmp(property, "src") == 0;
+
+	if (!src) {
+		if (DEBUG_DRIVER)
+			Genode::warning(__func__, " property '", property, "' not found.");
+		return 0;
+	}
+
+	regmap *map = (regmap *)kzalloc(sizeof(regmap), GFP_KERNEL);
+	map->base   = (u8 *)_ioremap(IOMEM_BASE_SRC, 0x10000, 0);
+	return map;
+}
+
+
+/********************
+ ** linux/regmap.h **
+ ********************/
+
+int regmap_update_bits(struct regmap *map, unsigned reg, unsigned mask,
+                       unsigned val)
+{
+	if (map == nullptr) return 0;
+
+	unsigned volatile current = *((unsigned *)(map->base + reg));
+
+	current &= ~mask;
+	current |= val;
+	*((volatile unsigned *)(map->base + reg)) = current;
+
+	return 0;
+}
+
 
 
 /******************
@@ -750,7 +1091,7 @@ void reinit_completion(struct completion *work)
  */
 class Driver : public Genode::List<Driver>::Element
 {
-	private:
+	public:
 
 		struct device_driver *_drv; /* Linux driver */
 
@@ -815,16 +1156,35 @@ int device_add(struct device *dev)
 		return 0;
 
 	/* foreach driver match and probe device */
-	for (Driver *driver = Driver::list()->first(); driver; driver = driver->next())
+	for (Driver *driver = Driver::list()->first(); driver; driver = driver->next()) {
 		if (driver->match(dev)) {
 			int ret = driver->probe(dev);
-
 			if (!ret) return 0;
 		}
+	}
 
 	return 0;
 }
 
+
+static bus_type *_bus = nullptr;
+
+int bus_register(struct bus_type *bus)
+{
+	if (_bus) {
+		Genode::error(__func__, " called twice, implement list");
+		return  -ENOMEM;
+	}
+
+	_bus = bus;
+	return 0;
+}
+
+
+void *devm_kcalloc(struct device * /* dev */, size_t n, size_t size, gfp_t flags)
+{
+	return kcalloc(n, size, flags);
+}
 
 
 /*************************
@@ -885,9 +1245,19 @@ int devm_request_irq(struct device *dev, unsigned int irq,
 		irqsteer_handler[irq] = handler;
 		irqsteer_dev_id[irq] = dev_id;
 		enable_irq(irq);
-	} else
-		Lx::Irq::irq().request_irq(Platform::Device::create(Lx_kit::env().env(), irq),
+	} else {
+		Device_id id = UNKNOWN;
+		unsigned off = 0;
+		switch (irq) {
+			case IRQ_IRQSTEER: id = DCSS; break;
+			case IRQ_HDMI_IN:  id = HDMI; break;
+			case IRQ_HDMI_OUT: id = HDMI; off = 1; break;
+			case IRQ_MIPI_DSI: id = MIPI; break;
+			default: Genode::error(__func__, " IRQ: ", irq, " not found");
+		};
+		Lx::Irq::irq().request_irq(Lx_kit::platform_device(id).irq(off),
 		                           irq, handler, dev_id);
+	}
 
 	return 0;
 }
@@ -917,14 +1287,41 @@ bool of_property_read_bool(const struct device_node *np, const char *propname)
 		    (Genode::strcmp(propname, "fsl,no_edid", strlen(np->name)) == 0))
 			return false;
 
-		Genode::error(__func__, "(): unhandled property '", propname,
-		                        "' of device '", Genode::Cstring(np->name), "'");
+		if (DEBUG_DRIVER)
+			Genode::error(__func__, "(): hdmi unhandled property '", propname,
+			                        "' of device '", Genode::Cstring(np->name), "'");
 
 		return false;
 	}
 
-	Genode::error(__func__, "(): unhandled device '", Genode::Cstring(np->name),
-	                        "' (property: '", Genode::Cstring(propname), "')");
+	if ((Genode::strcmp(np->name, "mipi_dsi_bridge") == 0)) {
+		if (Genode::strcmp(propname, "no_clk_reset") == 0) {
+			/* set np in bridge endpoint */
+			mipi_endpoint_device_node.properties = (property*)kzalloc(sizeof(property), 0);
+			mipi_endpoint_device_node.properties->name  = "mipi_dsi_bridge_np";
+			mipi_endpoint_device_node.properties->value = (void *)np;
+			return true;
+		}
+
+		if (DEBUG_DRIVER)
+			Genode::error(__func__, "(): mipi_dsi_bridge unhandled property '", propname,
+			                        "' of device '", Genode::Cstring(np->name), "'");
+		return false;
+	}
+
+	if (Genode::strcmp(np->name, "mipi_dsi") == 0) {
+		if (Genode::strcmp(propname, "no_clk_reset") == 0)
+			return true;
+
+		if (DEBUG_DRIVER)
+			Genode::error(__func__, "(): mipi_dsi unhandled property '", propname,
+			                        "' of device '", Genode::Cstring(np->name), "'");
+		return false;
+	}
+
+	if (DEBUG_DRIVER)
+		Genode::error(__func__, "(): unhandled device '", Genode::Cstring(np->name),
+		                        "' (property: '", Genode::Cstring(propname), "')");
 
 	return false;
 }
@@ -939,13 +1336,15 @@ int of_property_read_string(const struct device_node *np, const char *propname,
 			return 0;
 		}
 
-		Genode::error(__func__, "(): unhandled property '", propname,
-		                        "' of device '", Genode::Cstring(np->name), "'");
+		if (DEBUG_DRIVER)
+			Genode::error(__func__, "(): unhandled property '", propname,
+			                        "' of device '", Genode::Cstring(np->name), "'");
 		return -1;
 	}
 
-	Genode::error(__func__, "(): unhandled device '", Genode::Cstring(np->name),
-	                        "' (property: '", Genode::Cstring(propname), "')");
+	if (DEBUG_DRIVER)
+		Genode::error(__func__, "(): unhandled device '", Genode::Cstring(np->name),
+		                        "' (property: '", Genode::Cstring(propname), "')");
 	return -1;
 }
 
@@ -965,8 +1364,9 @@ int of_property_read_u32(const struct device_node *np, const char *propname, u32
 			return 0;
 		}
 
-		Genode::error(__func__, "(): unhandled property '", propname,
-		                        "' of device '", Genode::Cstring(np->name), "'");
+		if (DEBUG_DRIVER)
+			Genode::error(__func__, "(): unhandled property '", propname,
+			                        "' of device '", Genode::Cstring(np->name), "'");
 		return -1;
 
 	} else if (Genode::strcmp(np->name, "hdmi", strlen(np->name)) == 0) {
@@ -976,13 +1376,23 @@ int of_property_read_u32(const struct device_node *np, const char *propname, u32
 			return -1;
 		}
 
-		Genode::error(__func__, "(): unhandled property '", propname,
-		                        "' of device '", Genode::Cstring(np->name), "'");
+
+		if (DEBUG_DRIVER)
+			Genode::error(__func__, "(): unhandled property '", propname,
+			                        "' of device '", Genode::Cstring(np->name), "'");
 		return -1;
 	}
 
-	Genode::error(__func__, "(): unhandled device '", Genode::Cstring(np->name),
-	                        "' (property: '", Genode::Cstring(propname), "')");
+	int len = 0;
+	void const *value = of_get_property(np, propname, &len);
+	if (len > 0) {
+		*out_value = (unsigned long)value;
+		return 0;
+	}
+
+	if (DEBUG_DRIVER)
+		Genode::error(__func__, "(): unhandled device '", Genode::Cstring(np->name),
+		                        "' (property: '", Genode::Cstring(propname), "')");
 
 	return -1;
 }
@@ -1053,7 +1463,7 @@ Framebuffer::Driver::_preferred_mode(drm_connector *connector,
 
 	/* try to read configuration for connector */
 	try {
-		Xml_node config = _session.config();
+		Xml_node config = _config.xml();
 		Xml_node xn = config.sub_node();
 		for (unsigned i = 0; i < config.num_sub_nodes(); xn = xn.next()) {
 			if (!xn.has_type("connector"))
@@ -1114,7 +1524,7 @@ void Framebuffer::Driver::finish_initialization()
 
 	generate_report();
 
-	_session.config_changed();
+	config_changed();
 }
 
 
@@ -1122,21 +1532,21 @@ void Framebuffer::Driver::update_mode()
 {
 	using namespace Genode;
 
-	Configuration old = _config;
-	_config = Configuration();
+	Configuration old = _lx_config;
+	_lx_config = Configuration();
 
 	lx_for_each_connector(lx_drm_device, [&] (drm_connector *c) {
 		unsigned brightness;
 		drm_display_mode * mode = _preferred_mode(c, brightness);
 		if (!mode) return;
-		if (mode->hdisplay > _config._lx.width)  _config._lx.width  = mode->hdisplay;
-		if (mode->vdisplay > _config._lx.height) _config._lx.height = mode->vdisplay;
+		if (mode->hdisplay > _lx_config._lx.width)  _lx_config._lx.width  = mode->hdisplay;
+		if (mode->vdisplay > _lx_config._lx.height) _lx_config._lx.height = mode->vdisplay;
 
 	});
 
-	lx_c_allocate_framebuffer(lx_drm_device, &_config._lx);
+	lx_c_allocate_framebuffer(lx_drm_device, &_lx_config._lx);
 
-	if (!_config._lx.lx_fb) {
+	if (!_lx_config._lx.lx_fb) {
 		Genode::error("updating framebuffer failed");
 		return;
 	}
@@ -1147,16 +1557,16 @@ void Framebuffer::Driver::update_mode()
 			unsigned brightness = MAX_BRIGHTNESS + 1;
 
 			/* set mode */
-			lx_c_set_mode(lx_drm_device, c, _config._lx.lx_fb,
+			lx_c_set_mode(lx_drm_device, c, _lx_config._lx.lx_fb,
 			              _preferred_mode(c, brightness));
 		});
 	}
 
 	/* force virtual framebuffer size if requested */
-	if (int w = _session.force_width_from_config())
-		_config._lx.width = min(_config._lx.width, w);
-	if (int h = _session.force_height_from_config())
-		_config._lx.height = min(_config._lx.height, h);
+	if (int w = _force_width_from_config())
+		_lx_config._lx.width = min(_lx_config._lx.width, w);
+	if (int h = _force_height_from_config())
+		_lx_config._lx.height = min(_lx_config._lx.height, h);
 
 	if (old._lx.lx_fb) {
 		if (drm_framebuffer_read_refcount(old._lx.lx_fb) > 1) {
@@ -1197,8 +1607,8 @@ void Framebuffer::Driver::generate_report()
 
 	/* check for report configuration option */
 	try {
-		_reporter.enabled(_session.config().sub_node("report")
-		                 .attribute_value(_reporter.name().string(), false));
+		_reporter.enabled(_config.xml().sub_node("report")
+		                  .attribute_value(_reporter.name().string(), false));
 	} catch (...) {
 		_reporter.enabled(false);
 	}
@@ -1219,7 +1629,6 @@ void Framebuffer::Driver::generate_report()
 					xml.attribute("connected", connected);
 
 					if (!connected) return;
-
 					struct drm_display_mode *mode;
 					list_for_each_entry(mode, &c->modes, head) {
 						xml.node("mode", [&] ()
@@ -1254,7 +1663,8 @@ int oops_in_progress;
 
 char *strncpy(char *dst, const char* src, size_t n)
 {
-	return Genode::strncpy(dst, src, n);
+	Genode::copy_cstring(dst, src, n);
+	return dst;
 }
 
 int strncmp(const char *cs, const char *ct, size_t count)
@@ -1627,6 +2037,172 @@ unsigned int kref_read(const struct kref *kref)
 {
 	TRACE;
 	return atomic_read(&kref->refcount);
+}
+
+
+
+/****************************
+ ** drivers/phy/phy-core.c **
+ ****************************/
+
+void devm_phy_consume(struct device *dev, void *res)
+{
+	TRACE;
+}
+
+struct phy_ops;
+struct phy *devm_phy_create(struct device *dev,
+                            struct device_node *node,
+                            const struct phy_ops *ops)
+{
+	TRACE;
+
+	phy **ptr = (phy**)devres_alloc(devm_phy_consume, sizeof(*ptr), GFP_KERNEL);
+	phy *p    = (phy *)kzalloc(sizeof(phy), GFP_KERNEL);
+
+	p->dev.of_node = node;
+	p->ops         = ops;
+	p->dev.parent  = dev;
+
+	*ptr = p;
+	devres_add(dev, ptr);
+
+	return p;
+}
+
+
+struct phy *devm_phy_get(struct device *dev, const char *string)
+{
+	int len = 0;
+	void const *phy = of_get_property(dev->of_node, string, &len);
+	return (struct phy *)phy;
+}
+
+
+int phy_init(struct phy *phy)
+{
+	TRACE;
+
+	if (phy && phy->ops->init) {
+
+		int ret =  phy->ops->init(phy);
+		if (ret)
+			Genode::error(__func__, " failed (err: ", ret, ")");
+
+		return ret;
+	}
+
+	return 0;
+}
+
+
+int phy_power_on(struct phy *phy)
+{
+	TRACE;
+
+	if (phy && phy->ops->power_on) {
+
+		int ret = phy->ops->power_on(phy);
+		if (ret)
+			Genode::error(__func__, " failed (err: ", ret, ")");
+
+		return ret;
+	}
+
+	return 0;
+}
+
+/***********************
+ ** linux/backlight.h **
+ ***********************/
+
+
+struct backlight_device *
+devm_backlight_device_register(struct device *dev, const char *name,
+                               struct device *parent, void *devdata,
+                               const struct backlight_ops *ops,
+                               const struct backlight_properties *props)
+{
+	TRACE;
+
+	backlight_device *backlight = (backlight_device *)kzalloc(sizeof(backlight_device), GFP_KERNEL);
+	backlight->ops   = ops;
+	backlight->props = *props;
+	dev_set_drvdata(&backlight->dev, devdata);
+
+	return backlight;
+}
+
+
+int backlight_enable(struct backlight_device *bd)
+{
+	int ret = -ENOENT;
+
+	if (bd->ops && bd->ops->update_status)
+		ret = bd->ops->update_status(bd);
+
+	return ret;
+}
+
+
+void *bl_get_data(struct backlight_device *bl_dev)
+{
+	return dev_get_drvdata(&bl_dev->dev);
+}
+
+
+/*********************
+ ** drm/drm_panel.h **
+ *********************/
+
+int drm_panel_add(struct drm_panel *panel)
+{
+	device_node *np = &mipi_panel_node;
+
+	if (Genode::strcmp(np->properties[0].name, "panel") != 0) {
+		Genode::error("panel property not found");
+		return -1;
+	}
+
+	np->properties[0].value = (void*)panel;
+
+	return 0;
+}
+
+
+int drm_panel_attach(struct drm_panel *panel, struct drm_connector *connector)
+{
+	if (panel->connector)
+		return -EBUSY;
+
+	panel->connector = connector;
+	panel->drm = connector->dev;
+
+	return 0;
+}
+
+
+struct drm_panel *of_drm_find_panel(const struct device_node *np)
+{
+	int len;
+	return (drm_panel *)of_get_property(np, "panel", &len);
+}
+
+
+/***************************
+ ** linux/gpio/consumer.h **
+ ***************************/
+
+struct gpio_desc *
+devm_gpiod_get(struct device *dev, const char *con_id, enum gpiod_flags flags)
+{
+	TRACE;
+	return (struct gpio_desc *)-EINVAL;
+}
+
+void gpiod_set_value(struct gpio_desc *desc, int value)
+{
+	TRACE;
 }
 
 

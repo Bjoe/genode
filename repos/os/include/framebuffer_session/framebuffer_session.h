@@ -18,12 +18,15 @@
 #include <base/signal.h>
 #include <dataspace/capability.h>
 #include <session/session.h>
+#include <os/surface.h>
 
 namespace Framebuffer {
 
 	struct Mode;
 	struct Session;
 	struct Session_client;
+
+	using Area = Genode::Surface_base::Area;
 }
 
 
@@ -32,49 +35,11 @@ namespace Framebuffer {
  */
 struct Framebuffer::Mode
 {
-	public:
+	Area area;
 
-		/**
-		 * Pixel formats
-		 */
-		enum Format { INVALID, RGB565 };
+	Genode::size_t bytes_per_pixel() const { return 4; }
 
-		static Genode::size_t bytes_per_pixel(Format format)
-		{
-			if (format == RGB565) return 2;
-			return 0;
-		}
-
-	private:
-
-		int    _width, _height;
-		Format _format;
-
-	public:
-
-		Mode() : _width(0), _height(0), _format(INVALID) { }
-
-		Mode(int width, int height, Format format)
-		: _width(width), _height(height), _format(format) { }
-
-		int    width()  const { return _width; }
-		int    height() const { return _height; }
-		Format format() const { return _format; }
-
-		/**
-		 * Return number of bytes per pixel
-		 */
-		Genode::size_t bytes_per_pixel() const {
-			return bytes_per_pixel(_format); }
-
-		void print(Genode::Output &out) const
-		{
-			Genode::print(out, _width, "x", _height, "@");
-			switch (_format) {
-			case RGB565: Genode::print(out, "RGB565");  break;
-			default:     Genode::print(out, "INVALID"); break;
-			}
-		}
+	void print(Genode::Output &out) const { Genode::print(out, area); }
 };
 
 

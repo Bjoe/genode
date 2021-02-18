@@ -14,12 +14,9 @@
 
 /* Genode includes */
 #include <base/sleep.h>
-#include <base/lock.h>
 
 /* L4/Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/ipc.h>
-}
+#include <fiasco/syscall.h>
 
 
 void Genode::sleep_forever()

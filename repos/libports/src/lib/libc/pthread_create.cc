@@ -16,7 +16,7 @@
  */
 
 /* Genode includes */
-#include <base/lock.h>
+#include <base/mutex.h>
 #include <util/string.h>
 
 /* libc includes */
@@ -24,21 +24,63 @@
 #include <errno.h>
 
 /* libc-internal includes */
+#include <internal/init.h>
 #include <internal/thread_create.h>
 #include <internal/pthread.h>
 
 
-static Genode::String<32> pthread_name()
+static Genode::Cpu_session * _cpu_session { nullptr };
+static unsigned              _id_cpu_map[32];
+static bool                  _verbose { false };
+
+void Libc::init_pthread_support(Genode::Cpu_session &cpu_session,
+                                Genode::Xml_node node)
 {
-	static Genode::Lock mutex;
+	_cpu_session = &cpu_session;
+
+	_verbose = node.attribute_value("verbose", false);
+
+	String<32> placement("all-cpus");
+	placement = node.attribute_value("placement", placement);
+
+	if (placement == "single-cpu") {
+		return;
+	}
+
+	if (placement == "manual") {
+		node.for_each_sub_node("thread", [](Xml_node &node) {
+			if (node.has_attribute("id") && node.has_attribute("cpu")) {
+				unsigned const id  = node.attribute_value("id", 0U);
+				unsigned const cpu = node.attribute_value("cpu", 0U);
+
+				if (id < sizeof(_id_cpu_map) / sizeof(_id_cpu_map[0])) {
+					_id_cpu_map[id] = cpu;
+					if (_verbose)
+						Genode::log("pthread.", id, " -> cpu ", cpu);
+				} else {
+					Genode::warning("pthread configuration ignored - "
+					                "id=", id, " cpu=", cpu);
+				}
+			}
+		});
+		return;
+	}
+
+	/* all-cpus and unknown case */
+	for (unsigned i = 0; i < sizeof(_id_cpu_map) / sizeof(_id_cpu_map[0]); i++)
+		_id_cpu_map[i] = i;
+}
+
+
+static unsigned pthread_id()
+{
+	static Genode::Mutex mutex;
 
 	static unsigned id = 0;
 
-	Genode::Lock::Guard guard(mutex);
+	Genode::Mutex::Guard guard(mutex);
 
-	++id;
-
-	return { "pthread.", id };
+	return id++;
 }
 
 
@@ -80,12 +122,36 @@ extern "C"
 	int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 	                   void *(*start_routine) (void *), void *arg)
 	{
+		if (!_cpu_session || !start_routine || !thread)
+			return EINVAL;
+
 		size_t const stack_size = (attr && *attr && (*attr)->stack_size)
 		                        ? (*attr)->stack_size
 		                        : Libc::Component::stack_size();
 
-		return Libc::pthread_create(thread, start_routine, arg, stack_size,
-		                            pthread_name().string(), nullptr,
-		                            Genode::Affinity::Location());
+		using Genode::Affinity;
+
+		unsigned const id { pthread_id() };
+		unsigned const cpu = (id < sizeof(_id_cpu_map) / sizeof(_id_cpu_map[0])) ? _id_cpu_map[id] : 0;
+
+		Genode::String<32> const pthread_name { "pthread.", id };
+		Affinity::Space space { _cpu_session->affinity_space() };
+		Affinity::Location location { space.location_of_index(cpu) };
+
+		if (_verbose)
+			Genode::log("create ", pthread_name, " -> cpu ", cpu);
+
+		int result = Libc::pthread_create(thread, start_routine, arg, stack_size,
+		                                  pthread_name.string(), _cpu_session,
+		                                  location);
+
+		if ((result == 0) && attr && *attr &&
+		    ((*attr)->detach_state == PTHREAD_CREATE_DETACHED))
+			pthread_detach(*thread);
+
+		return result;
 	}
+
+	typeof(pthread_create) _pthread_create
+		__attribute__((alias("pthread_create")));
 }

@@ -34,9 +34,7 @@ Thread_capability Cpu_session_component::create_thread(Capability<Pd_session> pd
 {
 	Trace::Thread_name thread_name(name.string());
 
-	if (!_md_alloc.withdraw(_utcb_quota_size())) {
-		throw Out_of_ram();
-	}
+	withdraw(Ram_quota{_utcb_quota_size()});
 
 	Cpu_thread_component *thread = 0;
 
@@ -49,7 +47,7 @@ Thread_capability Cpu_session_component::create_thread(Capability<Pd_session> pd
 		weight = Weight(QUOTA_LIMIT);
 	}
 
-	Lock::Guard thread_list_lock_guard(_thread_list_lock);
+	Mutex::Guard thread_list_lock_guard(_thread_list_lock);
 
 	/*
 	 * Create thread associated with its protection domain
@@ -60,7 +58,7 @@ Thread_capability Cpu_session_component::create_thread(Capability<Pd_session> pd
 			throw Thread_creation_failed();
 		}
 
-		Lock::Guard slab_lock_guard(_thread_alloc_lock);
+		Mutex::Guard slab_lock_guard(_thread_alloc_lock);
 		thread = new (&_thread_alloc)
 			Cpu_thread_component(
 				cap(), _thread_ep, _pager_ep, *pd, _trace_control_area,
@@ -122,11 +120,11 @@ void Cpu_session_component::_unsynchronized_kill_thread(Thread_capability thread
 	_decr_weight(thread->weight());
 
 	{
-		Lock::Guard lock_guard(_thread_alloc_lock);
+		Mutex::Guard lock_guard(_thread_alloc_lock);
 		destroy(&_thread_alloc, thread);
 	}
 
-	_md_alloc.upgrade(_utcb_quota_size());
+	replenish(Ram_quota{_utcb_quota_size()});
 }
 
 
@@ -135,7 +133,7 @@ void Cpu_session_component::kill_thread(Thread_capability thread_cap)
 	if (!thread_cap.valid())
 		return;
 
-	Lock::Guard lock_guard(_thread_list_lock);
+	Mutex::Guard lock_guard(_thread_list_lock);
 
 	/* check that cap belongs to this session */
 	for (Cpu_thread_component *t = _thread_list.first(); t; t = t->next()) {
@@ -151,7 +149,7 @@ void Cpu_session_component::exception_sigh(Signal_context_capability sigh)
 {
 	_exception_sigh = sigh;
 
-	Lock::Guard lock_guard(_thread_list_lock);
+	Mutex::Guard lock_guard(_thread_list_lock);
 
 	for (Cpu_thread_component *t = _thread_list.first(); t; t = t->next())
 		t->session_exception_sigh(_exception_sigh);
@@ -171,17 +169,6 @@ Affinity::Space Cpu_session_component::affinity_space() const
 Dataspace_capability Cpu_session_component::trace_control()
 {
 	return _trace_control_area.dataspace();
-}
-
-
-static size_t remaining_session_ram_quota(char const *args)
-{
-	/*
-	 * We don't need to consider an underflow here because
-	 * 'Cpu_root::_create_session' already checks for the condition.
-	 */
-	return Arg_string::find_arg(args, "ram_quota").ulong_value(0)
-	     - Trace::Control_area::SIZE;
 }
 
 
@@ -254,28 +241,30 @@ int Cpu_session_component::ref_account(Cpu_session_capability ref_cap)
 }
 
 
-Cpu_session_component::Cpu_session_component(Ram_allocator          &ram,
+Cpu_session_component::Cpu_session_component(Rpc_entrypoint         &session_ep,
+                                             Resources        const &resources,
+                                             Label            const &label,
+                                             Diag             const &diag,
+                                             Ram_allocator          &ram_alloc,
                                              Region_map             &local_rm,
-                                             Rpc_entrypoint         &session_ep,
                                              Rpc_entrypoint         &thread_ep,
                                              Pager_entrypoint       &pager_ep,
-                                             Allocator              &md_alloc,
                                              Trace::Source_registry &trace_sources,
                                              char             const *args,
                                              Affinity         const &affinity,
                                              size_t           const  quota)
 :
-	_label(label_from_args(args)),
-	_session_ep(session_ep),
-	_thread_ep(thread_ep), _pager_ep(pager_ep),
-	_md_alloc(&md_alloc, remaining_session_ram_quota(args)),
+	Session_object(session_ep, resources, label, diag),
+	_session_ep(session_ep), _thread_ep(thread_ep), _pager_ep(pager_ep),
+	_ram_alloc(ram_alloc, _ram_quota_guard(), _cap_quota_guard()),
+	_md_alloc(_ram_alloc, local_rm),
 	_thread_alloc(_md_alloc), _priority(0),
 
 	/* map affinity to a location within the physical affinity space */
 	_location(affinity.scale_to(platform().affinity_space())),
 
 	_trace_sources(trace_sources),
-	_trace_control_area(ram, local_rm),
+	_trace_control_area(_ram_alloc, local_rm),
 	_quota(quota), _ref(0),
 	_native_cpu(*this, args)
 {
@@ -300,7 +289,7 @@ void Cpu_session_component::_deinit_ref_account()
 {
 	/* rewire child ref accounts to this sessions's ref account */
 	{
-		Lock::Guard lock_guard(_ref_members_lock);
+		Mutex::Guard lock_guard(_ref_members_lock);
 		for (Cpu_session_component * s; (s = _ref_members.first()); ) {
 			_unsync_remove_ref_member(*s);
 			if (_ref)
@@ -320,7 +309,7 @@ void Cpu_session_component::_deinit_ref_account()
 
 void Cpu_session_component::_deinit_threads()
 {
-	Lock::Guard lock_guard(_thread_list_lock);
+	Mutex::Guard lock_guard(_thread_list_lock);
 
 	/*
 	 * We have to keep the '_thread_list_lock' during the whole destructor to
@@ -356,7 +345,7 @@ void Cpu_session_component::_decr_weight(size_t const weight)
 
 void Cpu_session_component::_decr_quota(size_t const quota)
 {
-	Lock::Guard lock_guard(_thread_list_lock);
+	Mutex::Guard lock_guard(_thread_list_lock);
 	_quota -= quota;
 	_update_each_thread_quota();
 }
@@ -364,7 +353,7 @@ void Cpu_session_component::_decr_quota(size_t const quota)
 
 void Cpu_session_component::_incr_quota(size_t const quota)
 {
-	Lock::Guard lock_guard(_thread_list_lock);
+	Mutex::Guard lock_guard(_thread_list_lock);
 	_quota += quota;
 	_update_each_thread_quota();
 }
@@ -391,9 +380,9 @@ size_t Cpu_session_component::_weight_to_quota(size_t const weight) const
 
 unsigned Trace::Source::_alloc_unique_id()
 {
-	static Lock lock;
+	static Mutex lock;
 	static unsigned cnt;
-	Lock::Guard guard(lock);
+	Mutex::Guard guard(lock);
 	return cnt++;
 }
 

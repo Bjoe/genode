@@ -51,8 +51,8 @@ struct Sculpt::Graph : Dialog
 	Depot_deploy::Children const &_deploy_children;
 
 	Hoverable_item   _node_button_item { };
-	Hoverable_item   _add_button_item { };
-	Activatable_item _remove_item   { };
+	Hoverable_item   _add_button_item  { };
+	Activatable_item _action_item      { };
 
 	/*
 	 * Defined when '+' button is hovered
@@ -81,7 +81,7 @@ struct Sculpt::Graph : Dialog
 
 	void reset() override { }
 
-	void reset_operation()
+	void reset_storage_operation()
 	{
 		if (_storage_dialog.constructed())
 			_storage_dialog->reset_operation();
@@ -106,6 +106,7 @@ struct Sculpt::Graph : Dialog
 	struct Action : Storage_dialog::Action
 	{
 		virtual void remove_deployed_component(Start_name const &) = 0;
+		virtual void restart_deployed_component(Start_name const &) = 0;
 		virtual void toggle_launcher_selector(Rect) = 0;
 	};
 

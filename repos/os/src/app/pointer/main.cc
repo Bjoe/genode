@@ -18,11 +18,11 @@
 #include <base/heap.h>
 #include <base/attached_rom_dataspace.h>
 #include <os/pixel_alpha8.h>
-#include <os/pixel_rgb565.h>
 #include <os/pixel_rgb888.h>
+#include <os/pixel_rgb565.h>
 #include <os/surface.h>
 #include <os/texture_rgb888.h>
-#include <nitpicker_session/connection.h>
+#include <gui_session/connection.h>
 #include <report_rom/report_service.h>
 #include <pointer/dither_painter.h>
 #include <pointer/shape_report.h>
@@ -35,14 +35,14 @@ namespace Pointer { class Main; }
 
 
 template <typename PT>
-void convert_default_pointer_data_to_pixels(PT *pixel, Nitpicker::Area size)
+void convert_default_pointer_data_to_pixels(PT *pixel, Gui::Area size)
 {
 	unsigned char *alpha = (unsigned char *)(pixel + size.count());
 
 	for (unsigned y = 0; y < size.h(); y++) {
 		for (unsigned x = 0; x < size.w(); x++) {
 
-			/* the source is known to be in RGB565 format */
+			/* the source is known to be in RGB888 format */
 			Genode::Pixel_rgb565 src =
 				*(Genode::Pixel_rgb565 *)(&big_mouse.pixels[y][x]);
 
@@ -66,17 +66,17 @@ class Pointer::Main : public Rom::Reader
 
 		bool _verbose = _config.xml().attribute_value("verbose", false);
 
-		Nitpicker::Connection _nitpicker { _env };
+		Gui::Connection _gui { _env };
 
-		Nitpicker::Session::View_handle _view = _nitpicker.create_view();
+		Gui::Session::View_handle _view = _gui.create_view();
 
 		bool _default_pointer_visible = false;
 
-		Nitpicker::Area _current_pointer_size { };
+		Gui::Area _current_pointer_size { };
 
 		Genode::Dataspace_capability _pointer_ds { };
 
-		void _resize_nitpicker_buffer_if_needed(Nitpicker::Area pointer_size);
+		void _resize_gui_buffer_if_needed(Gui::Area pointer_size);
 		void _show_default_pointer();
 		void _update_pointer();
 
@@ -134,18 +134,16 @@ class Pointer::Main : public Rom::Reader
 };
 
 
-void Pointer::Main::_resize_nitpicker_buffer_if_needed(Nitpicker::Area pointer_size)
+void Pointer::Main::_resize_gui_buffer_if_needed(Gui::Area pointer_size)
 {
 	if (pointer_size == _current_pointer_size)
 		return;
 
-	Framebuffer::Mode const mode { (int)pointer_size.w(),
-	                               (int)pointer_size.h(),
-	                               Framebuffer::Mode::RGB565 };
+	Framebuffer::Mode const mode { .area = pointer_size };
 
-	_nitpicker.buffer(mode, true /* use alpha */);
+	_gui.buffer(mode, true /* use alpha */);
 
-	_pointer_ds = _nitpicker.framebuffer()->dataspace();
+	_pointer_ds = _gui.framebuffer()->dataspace();
 
 	_current_pointer_size = pointer_size;
 }
@@ -157,10 +155,10 @@ void Pointer::Main::_show_default_pointer()
 	if (_default_pointer_visible)
 		return;
 
-	Nitpicker::Area const pointer_size { big_mouse.w, big_mouse.h };
+	Gui::Area const pointer_size { big_mouse.w, big_mouse.h };
 
 	try {
-		_resize_nitpicker_buffer_if_needed(pointer_size);
+		_resize_gui_buffer_if_needed(pointer_size);
 	} catch (...) {
 		Genode::error(__func__, ": could not resize the pointer buffer "
 		              "for ", pointer_size.w(), "x", pointer_size.h(), " pixels");
@@ -169,13 +167,13 @@ void Pointer::Main::_show_default_pointer()
 
 	Genode::Attached_dataspace ds { _env.rm(), _pointer_ds };
 
-	convert_default_pointer_data_to_pixels(ds.local_addr<Genode::Pixel_rgb565>(),
+	convert_default_pointer_data_to_pixels(ds.local_addr<Genode::Pixel_rgb888>(),
 	                                       pointer_size);
-	_nitpicker.framebuffer()->refresh(0, 0, pointer_size.w(), pointer_size.h());
+	_gui.framebuffer()->refresh(0, 0, pointer_size.w(), pointer_size.h());
 
-	Nitpicker::Rect geometry(Nitpicker::Point(0, 0), pointer_size);
-	_nitpicker.enqueue<Nitpicker::Session::Command::Geometry>(_view, geometry);
-	_nitpicker.execute();
+	Gui::Rect geometry(Gui::Point(0, 0), pointer_size);
+	_gui.enqueue<Gui::Session::Command::Geometry>(_view, geometry);
+	_gui.execute();
 
 	_default_pointer_visible = true;
 }
@@ -183,16 +181,16 @@ void Pointer::Main::_show_default_pointer()
 
 void Pointer::Main::_show_shape_pointer(Shape_report &shape_report)
 {
-	Nitpicker::Area  shape_size;
-	Nitpicker::Point shape_hot;
+	Gui::Area  shape_size;
+	Gui::Point shape_hot;
 
 	if (shape_report.visible) {
 
-		shape_size = Nitpicker::Area(shape_report.width, shape_report.height);
-		shape_hot = Nitpicker::Point((int)-shape_report.x_hot, (int)-shape_report.y_hot);
+		shape_size = Gui::Area(shape_report.width, shape_report.height);
+		shape_hot = Gui::Point((int)-shape_report.x_hot, (int)-shape_report.y_hot);
 
 		try {
-			_resize_nitpicker_buffer_if_needed(shape_size);
+			_resize_gui_buffer_if_needed(shape_size);
 		} catch (...) {
 			error(__func__, ": could not resize the pointer buffer "
 			      "for ", shape_size, " pixels");
@@ -220,23 +218,23 @@ void Pointer::Main::_show_shape_pointer(Shape_report &shape_report)
 
 		Attached_dataspace ds { _env.rm(), _pointer_ds };
 
-		Pixel_rgb565 *pixel = ds.local_addr<Pixel_rgb565>();
+		Pixel_rgb888 *pixel = ds.local_addr<Pixel_rgb888>();
 
 		Pixel_alpha8 *alpha =
 			reinterpret_cast<Pixel_alpha8 *>(pixel + shape_size.count());
 
-		Surface<Pixel_rgb565> pixel_surface(pixel, shape_size);
+		Surface<Pixel_rgb888> pixel_surface(pixel, shape_size);
 		Surface<Pixel_alpha8> alpha_surface(alpha, shape_size);
 
 		Dither_painter::paint(pixel_surface, texture);
 		Dither_painter::paint(alpha_surface, texture);
 	}
 
-	_nitpicker.framebuffer()->refresh(0, 0, shape_size.w(), shape_size.h());
+	_gui.framebuffer()->refresh(0, 0, shape_size.w(), shape_size.h());
 
-	Nitpicker::Rect geometry(shape_hot, shape_size);
-	_nitpicker.enqueue<Nitpicker::Session::Command::Geometry>(_view, geometry);
-	_nitpicker.execute();
+	Gui::Rect geometry(shape_hot, shape_size);
+	_gui.enqueue<Gui::Session::Command::Geometry>(_view, geometry);
+	_gui.execute();
 
 	_default_pointer_visible = false;
 }
@@ -255,7 +253,7 @@ void Pointer::Main::_update_pointer()
 			_rom_registry.lookup(*this, _hovered_label);
 
 		try {
-			Shape_report shape_report { 0, 0, 0, 0, 0, 0 };
+			Shape_report shape_report { 0, 0, 0, 0, 0, { 0 } };
 
 			shape_module.read_content(*this, (char*)&shape_report, sizeof(shape_report));
 
@@ -341,10 +339,9 @@ Pointer::Main::Main(Genode::Env &env) : _env(env)
 	 * pointer size to let the user know right from the start if the
 	 * RAM quota is too low.
 	 */
-	Framebuffer::Mode const mode { Pointer::MAX_WIDTH, Pointer::MAX_HEIGHT,
-	                               Framebuffer::Mode::RGB565 };
+	Framebuffer::Mode const mode { .area = { Pointer::MAX_WIDTH, Pointer::MAX_HEIGHT } };
 
-	_nitpicker.buffer(mode, true /* use alpha */);
+	_gui.buffer(mode, true /* use alpha */);
 
 	if (_shapes_enabled) {
 		try {
@@ -353,7 +350,7 @@ Pointer::Main::Main(Genode::Env &env) : _env(env)
 			_handle_hover();
 		} catch (Genode::Rom_connection::Rom_connection_failed) {
 			Genode::warning("Could not open ROM session for \"hover\".",
-		                	" This ROM is used for custom pointer shape support.");
+		                    " This ROM is used for custom pointer shape support.");
 		}
 
 		try {
@@ -362,13 +359,13 @@ Pointer::Main::Main(Genode::Env &env) : _env(env)
 			_handle_xray();
 		} catch (Genode::Rom_connection::Rom_connection_failed) {
 			Genode::warning("Could not open ROM session for \"xray\".",
-		                	" This ROM is used for custom pointer shape support.");
+		                    " This ROM is used for custom pointer shape support.");
 		}
 	}
 
-	typedef Nitpicker::Session::View_handle View_handle;
-	_nitpicker.enqueue<Nitpicker::Session::Command::To_front>(_view, View_handle());
-	_nitpicker.execute();
+	typedef Gui::Session::View_handle View_handle;
+	_gui.enqueue<Gui::Session::Command::To_front>(_view, View_handle());
+	_gui.execute();
 
 	_update_pointer();
 

@@ -41,7 +41,7 @@ struct Vfs::Directory_service : Interface
 	/**
 	 * Flags of 'mode' argument of open syscall
 	 */
-	enum {
+	enum Open_mode {
 		OPEN_MODE_RDONLY  = 0,
 		OPEN_MODE_WRONLY  = 1,
 		OPEN_MODE_RDWR    = 2,
@@ -182,7 +182,7 @@ struct Vfs::Directory_service : Interface
 			char buf[MAX_LEN] { };
 
 			Name() { };
-			Name(char const *name) { strncpy(buf, name, sizeof(buf)); }
+			Name(char const *name) { copy_cstring(buf, name, sizeof(buf)); }
 		};
 
 		unsigned long fileno;

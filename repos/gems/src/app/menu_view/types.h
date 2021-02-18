@@ -15,14 +15,13 @@
 #define _TYPES_H_
 
 /* Genode includes */
-#include <nitpicker_session/connection.h>
+#include <gui_session/connection.h>
 #include <util/misc_math.h>
 #include <decorator/xml_utils.h>
 #include <nitpicker_gfx/box_painter.h>
 #include <nitpicker_gfx/texture_painter.h>
 #include <base/attached_rom_dataspace.h>
 #include <base/heap.h>
-#include <os/pixel_rgb565.h>
 #include <os/pixel_alpha8.h>
 #include <os/texture_rgb888.h>
 #include <util/reconstructible.h>

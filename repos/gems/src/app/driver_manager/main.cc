@@ -18,7 +18,7 @@
 #include <os/reporter.h>
 #include <block_session/block_session.h>
 #include <rm_session/rm_session.h>
-#include <framebuffer_session/framebuffer_session.h>
+#include <capture_session/capture_session.h>
 #include <io_mem_session/io_mem_session.h>
 #include <io_port_session/io_port_session.h>
 #include <timer_session/timer_session.h>
@@ -38,6 +38,8 @@ namespace Driver_manager {
 	struct Nvme_driver;
 
 	struct Priority { int value; };
+
+	struct Version { unsigned value; };
 }
 
 
@@ -62,11 +64,13 @@ class Driver_manager::Device_driver : Noncopyable
 		                                           Binary  const &binary,
 		                                           Ram_quota      ram,
 		                                           Cap_quota      caps,
-		                                           Priority       priority)
+		                                           Priority       priority,
+		                                           Version        version)
 		{
 			xml.attribute("name", name);
 			xml.attribute("caps", String<64>(caps));
 			xml.attribute("priority", priority.value);
+			xml.attribute("version", version.value);
 			xml.node("binary", [&] () { xml.attribute("name", binary); });
 			xml.node("resource", [&] () {
 				xml.attribute("name", "RAM");
@@ -122,19 +126,20 @@ class Driver_manager::Device_driver : Noncopyable
 
 struct Driver_manager::Intel_fb_driver : Device_driver
 {
+	Version version { 0 };
+
 	void generate_start_node(Xml_generator &xml) const override
 	{
 		xml.node("start", [&] () {
 			_gen_common_start_node_content(xml, "intel_fb_drv", "intel_fb_drv",
 			                               Ram_quota{42*1024*1024}, Cap_quota{800},
-			                               Priority{0});
-			_gen_provides_node<Framebuffer::Session>(xml);
+			                               Priority{0}, version);
+			xml.node("heartbeat", [&] () { });
 			xml.node("route", [&] () {
 				_gen_config_route(xml, "fb_drv.config");
 				_gen_default_parent_route(xml);
 			});
 		});
-		_gen_forwarded_service<Framebuffer::Session>(xml, "intel_fb_drv");
 	}
 };
 
@@ -146,14 +151,12 @@ struct Driver_manager::Vesa_fb_driver : Device_driver
 		xml.node("start", [&] () {
 			_gen_common_start_node_content(xml, "vesa_fb_drv", "vesa_fb_drv",
 			                               Ram_quota{8*1024*1024}, Cap_quota{100},
-			                               Priority{-1});
-			_gen_provides_node<Framebuffer::Session>(xml);
+			                               Priority{-1}, Version{0});
 			xml.node("route", [&] () {
 				_gen_config_route(xml, "fb_drv.config");
 				_gen_default_parent_route(xml);
 			});
 		});
-		_gen_forwarded_service<Framebuffer::Session>(xml, "vesa_fb_drv");
 	}
 };
 
@@ -180,7 +183,7 @@ struct Driver_manager::Boot_fb_driver : Device_driver
 				_pitch = _height = 0;
 		}
 
-		size_t num_bytes() const { return _pitch * _height + 512*1024; }
+		size_t num_bytes() const { return _pitch * _height + 1024*1024; }
 
 		bool valid() const { return _pitch * _height != 0; }
 	};
@@ -190,16 +193,14 @@ struct Driver_manager::Boot_fb_driver : Device_driver
 	void generate_start_node(Xml_generator &xml) const override
 	{
 		xml.node("start", [&] () {
-			_gen_common_start_node_content(xml, "fb_boot_drv", "fb_boot_drv",
+			_gen_common_start_node_content(xml, "boot_fb_drv", "boot_fb_drv",
 			                               _ram_quota, Cap_quota{100},
-			                               Priority{-1});
-			_gen_provides_node<Framebuffer::Session>(xml);
+			                               Priority{-1}, Version{0});
 			xml.node("route", [&] () {
 				_gen_config_route(xml, "fb_drv.config");
 				_gen_default_parent_route(xml);
 			});
 		});
-		_gen_forwarded_service<Framebuffer::Session>(xml, "fb_boot_drv");
 	}
 };
 
@@ -211,7 +212,7 @@ struct Driver_manager::Ahci_driver : Device_driver
 		xml.node("start", [&] () {
 			_gen_common_start_node_content(xml, "ahci_drv", "ahci_drv",
 			                               Ram_quota{10*1024*1024}, Cap_quota{100},
-			                               Priority{-1});
+			                               Priority{-1}, Version{0});
 			_gen_provides_node<Block::Session>(xml);
 			xml.node("config", [&] () {
 				xml.node("report", [&] () { xml.attribute("ports", "yes"); });
@@ -223,6 +224,7 @@ struct Driver_manager::Ahci_driver : Device_driver
 					});
 				}
 			});
+			xml.node("heartbeat", [&] () { });
 			xml.node("route", [&] () {
 				xml.node("service", [&] () {
 					xml.attribute("name", "Report");
@@ -266,7 +268,7 @@ struct Driver_manager::Nvme_driver : Device_driver
 		xml.node("start", [&] () {
 			_gen_common_start_node_content(xml, "nvme_drv", "nvme_drv",
 			                               Ram_quota{8*1024*1024}, Cap_quota{100},
-			                               Priority{-1});
+			                               Priority{-1}, Version{0});
 			_gen_provides_node<Block::Session>(xml);
 			xml.node("config", [&] () {
 				xml.node("report", [&] () { xml.attribute("namespaces", "yes"); });
@@ -314,12 +316,13 @@ struct Driver_manager::Main : private Block_devices_generator
 {
 	Env &_env;
 
-	Attached_rom_dataspace _platform    { _env, "platform_info" };
-	Attached_rom_dataspace _usb_devices { _env, "usb_devices" };
-	Attached_rom_dataspace _usb_policy  { _env, "usb_policy"  };
-	Attached_rom_dataspace _pci_devices { _env, "pci_devices" };
-	Attached_rom_dataspace _ahci_ports  { _env, "ahci_ports"  };
-	Attached_rom_dataspace _nvme_ns     { _env, "nvme_ns"     };
+	Attached_rom_dataspace _platform      { _env, "platform_info" };
+	Attached_rom_dataspace _usb_devices   { _env, "usb_devices"   };
+	Attached_rom_dataspace _usb_policy    { _env, "usb_policy"    };
+	Attached_rom_dataspace _pci_devices   { _env, "pci_devices"   };
+	Attached_rom_dataspace _ahci_ports    { _env, "ahci_ports"    };
+	Attached_rom_dataspace _nvme_ns       { _env, "nvme_ns"       };
+	Attached_rom_dataspace _dynamic_state { _env, "dynamic_state" };
 
 	Reporter _init_config    { _env, "config", "init.config" };
 	Reporter _usb_drv_config { _env, "config", "usb_drv.config" };
@@ -365,6 +368,11 @@ struct Driver_manager::Main : private Block_devices_generator
 	Signal_handler<Main> _nvme_ns_update_handler {
 		_env.ep(), *this, &Main::_handle_nvme_ns_update };
 
+	Signal_handler<Main> _dynamic_state_handler {
+		_env.ep(), *this, &Main::_handle_dyanmic_state };
+
+	void _handle_dyanmic_state();
+
 	static void _gen_parent_service_xml(Xml_generator &xml, char const *name)
 	{
 		xml.node("service", [&] () { xml.attribute("name", name); });
@@ -387,10 +395,11 @@ struct Driver_manager::Main : private Block_devices_generator
 		_usb_drv_config.enabled(true);
 		_block_devices.enabled(true);
 
-		_pci_devices.sigh(_pci_devices_update_handler);
-		_usb_policy .sigh(_usb_policy_update_handler);
-		_ahci_ports .sigh(_ahci_ports_update_handler);
-		_nvme_ns    .sigh(_nvme_ns_update_handler);
+		_pci_devices  .sigh(_pci_devices_update_handler);
+		_usb_policy   .sigh(_usb_policy_update_handler);
+		_ahci_ports   .sigh(_ahci_ports_update_handler);
+		_nvme_ns      .sigh(_nvme_ns_update_handler);
+		_dynamic_state.sigh(_dynamic_state_handler);
 
 		_generate_init_config(_init_config);
 
@@ -524,7 +533,12 @@ void Driver_manager::Main::_generate_init_config(Reporter &init_config) const
 		xml.attribute("verbose", false);
 		xml.attribute("prio_levels", 2);
 
-		xml.node("report", [&] () { xml.attribute("child_ram", true); });
+		xml.node("report", [&] () {
+			xml.attribute("child_ram", true);
+			xml.attribute("delay_ms", 2500);
+		});
+
+		xml.node("heartbeat", [&] () { xml.attribute("rate_ms", 2500); });
 
 		xml.node("parent-provides", [&] () {
 			_gen_parent_service_xml(xml, Rom_session::service_name());
@@ -538,6 +552,7 @@ void Driver_manager::Main::_generate_init_config(Reporter &init_config) const
 			_gen_parent_service_xml(xml, Platform::Session::service_name());
 			_gen_parent_service_xml(xml, Report::Session::service_name());
 			_gen_parent_service_xml(xml, Usb::Session::service_name());
+			_gen_parent_service_xml(xml, Capture::Session::service_name());
 		});
 
 
@@ -664,48 +679,84 @@ void Driver_manager::Main::_generate_usb_drv_config(Reporter &usb_drv_config,
 		xml.attribute("xhci", true);
 		xml.attribute("capslock_led", "rom");
 		xml.attribute("numlock_led",  "rom");
-		xml.node("hid", [&] () { });
-		xml.node("raw", [&] () {
-			xml.node("report", [&] () { xml.attribute("devices", true); });
 
-			/* incorporate user-managed policy */
-			policy.with_raw_content([&] (char const *start, size_t length) {
-				xml.append(start, length); });
+		xml.node("report", [&] () { xml.attribute("devices", true); });
 
-			devices.for_each_sub_node("device", [&] (Xml_node device) {
+		/* incorporate user-managed policy */
+		policy.with_raw_content([&] (char const *start, size_t length) {
+			xml.append(start, length); });
 
-				typedef String<64> Label;
-				typedef String<32> Id;
+		/* usb hid drv gets all hid devices */
+		xml.node("policy", [&] () {
+			xml.attribute("label_prefix", "usb_hid_drv");
+			xml.attribute("class", "0x3");
+		});
 
-				Label const label      = device.attribute_value("label", Label());
-				Id    const vendor_id  = device.attribute_value("vendor_id",  Id());
-				Id    const product_id = device.attribute_value("product_id", Id());
+		devices.for_each_sub_node("device", [&] (Xml_node device) {
 
-				/*
-				 * Limit USB sessions to storage and vendor specific in order to avoid
-				 * conflicts with the USB driver's built-in HID drivers.
-				 */
-				unsigned long const class_code = device.attribute_value("class", 0UL);
+			typedef String<64> Label;
+			typedef String<32> Id;
 
-				enum { USB_CLASS_MASS_STORAGE = 8, USB_CLASS_VENDOR_SPECIFIC = 0xff };
+			Label const label      = device.attribute_value("label", Label());
+			Id    const vendor_id  = device.attribute_value("vendor_id",  Id());
+			Id    const product_id = device.attribute_value("product_id", Id());
 
-				bool const expose_as_usb_raw = (class_code == USB_CLASS_MASS_STORAGE) ||
-				                               (class_code == USB_CLASS_VENDOR_SPECIFIC);
-				if (!expose_as_usb_raw)
-					return;
+			/*
+			 * Limit USB sessions to storage and vendor specific in order to avoid
+			 * conflicts with the USB driver's built-in HID drivers.
+			 */
+			unsigned long const class_code = device.attribute_value("class", 0UL);
 
-				xml.node("policy", [&] () {
-					xml.attribute("label_suffix", label);
-					xml.attribute("vendor_id",  vendor_id);
-					xml.attribute("product_id", product_id);
+			enum { USB_CLASS_MASS_STORAGE = 8, USB_CLASS_VENDOR_SPECIFIC = 0xff };
 
-					/* annotate policy to make storage devices easy to spot */
-					if (class_code == USB_CLASS_MASS_STORAGE)
-						xml.attribute("class", "storage");
-				});
+			bool const expose_as_usb_raw = (class_code == USB_CLASS_MASS_STORAGE) ||
+			                               (class_code == USB_CLASS_VENDOR_SPECIFIC);
+			if (!expose_as_usb_raw)
+				return;
+
+			xml.node("policy", [&] () {
+				xml.attribute("label_suffix", label);
+				xml.attribute("vendor_id",  vendor_id);
+				xml.attribute("product_id", product_id);
+
+				/* annotate policy to make storage devices easy to spot */
+				if (class_code == USB_CLASS_MASS_STORAGE)
+					xml.attribute("class", "storage");
 			});
 		});
 	});
+}
+
+
+void Driver_manager::Main::_handle_dyanmic_state()
+{
+	_dynamic_state.update();
+
+	bool reconfigure_dynamic_init = false;
+
+	_dynamic_state.xml().for_each_sub_node([&] (Xml_node child) {
+
+		using Name = Device_driver::Name;
+
+		Name const name = child.attribute_value("name", Name());
+
+		if (name == "intel_fb_drv") {
+
+			unsigned long const skipped_heartbeats =
+				child.attribute_value("skipped_heartbeats", 0U);
+
+			if (skipped_heartbeats >= 2) {
+
+				if (_intel_fb_driver.constructed()) {
+					_intel_fb_driver->version.value++;
+					reconfigure_dynamic_init = true;
+				}
+			}
+		}
+	});
+
+	if (reconfigure_dynamic_init)
+		_generate_init_config(_init_config);
 }
 
 

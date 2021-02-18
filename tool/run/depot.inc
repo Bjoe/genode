@@ -444,12 +444,12 @@ proc check_for_missing_depot_archives { } {
 
 	if {[llength $local_user_archives]} {
 		append create_args " CROSS_DEV_PREFIX=[cross_dev_prefix]"
-		puts stderr "You may create the following archives locally:\n"
+		puts stderr "You may create the following archives locally by executing:\n"
 		puts stderr "  [genode_dir]/tool/depot/create $local_user_archives$create_args\n"
 	}
 
 	if {[llength $foreign_archives]} {
-		puts stderr "You may try to download the following archives:\n"
+		puts stderr "You may try to download the following archives by executing:\n"
 		puts stderr "  [genode_dir]/tool/depot/download $foreign_archives\n"
 	}
 
@@ -459,13 +459,16 @@ proc check_for_missing_depot_archives { } {
 
 proc drivers_interactive_pkg { } {
 
-	if {[have_spec muen]}      { return drivers_interactive-muen }
-	if {[have_spec linux]}     { return drivers_interactive-linux }
-	if {[have_spec x86]}       { return drivers_interactive-pc }
-	if {[have_spec pbxa9]}     { return drivers_interactive-pbxa9 }
-	if {[have_spec imx53_qsb]} { return drivers_interactive-imx53_qsb }
-	if {[have_spec rpi]}       { return drivers_interactive-rpi }
-	if {[have_spec imx8q_evk]} { return drivers_interactive-imx8q_evk }
+	if {[have_board muen]}      { return drivers_interactive-muen }
+	if {[have_board linux]}     { return drivers_interactive-linux }
+	if {[have_board pc]}        { return drivers_interactive-pc }
+	if {[have_board pbxa9]}     { return drivers_interactive-pbxa9 }
+	if {[have_board imx53_qsb]} { return drivers_interactive-imx53_qsb }
+	if {[have_board imx53_qsb_tz]} { return drivers_interactive-imx53_qsb }
+	if {[have_board rpi]}       { return drivers_interactive-rpi }
+	if {[have_board imx8q_evk]} { return drivers_interactive-imx8q_evk }
+	if {[have_board panda]}     { return drivers_interactive-panda }
+	if {[have_board arndale]}   { return drivers_interactive-arndale }
 
 	puts stderr "drivers_interactive package undefined for this build configuration"
 	exit 1
@@ -474,18 +477,17 @@ proc drivers_interactive_pkg { } {
 
 proc drivers_nic_pkg { } {
 
-	if {[have_spec x86] && ![have_spec muen] &&
-	    ![have_spec linux]}          { return drivers_nic-pc              }
-	if {[have_spec muen]}            { return drivers_nic-muen            }
-	if {[have_spec linux]}           { return drivers_nic-linux           }
-	if {[have_spec pbxa9]}           { return drivers_nic-pbxa9           }
-	if {[have_spec rpi]}             { return drivers_nic-rpi             }
-	if {[have_spec zynq_qemu]}       { return drivers_nic-zynq            }
-	if {[have_spec imx53_qsb]}       { return drivers_nic-imx53_qsb       }
-	if {[have_spec imx6q_sabrelite]} { return drivers_nic-imx6q_sabrelite }
-	if {[have_spec imx7d_sabre]}     { return drivers_nic-imx7d_sabre     }
-	if {[have_spec imx8q_evk]}       { return drivers_nic-imx8q_evk       }
-
+	if {[have_board pc]}              { return drivers_nic-pc              }
+	if {[have_board muen]}            { return drivers_nic-muen            }
+	if {[have_board linux]}           { return drivers_nic-linux           }
+	if {[have_board pbxa9]}           { return drivers_nic-pbxa9           }
+	if {[have_board rpi]}             { return drivers_nic-rpi             }
+	if {[have_board zynq_qemu]}       { return drivers_nic-zynq            }
+	if {[have_board imx53_qsb]}       { return drivers_nic-imx53_qsb       }
+	if {[have_board imx6q_sabrelite]} { return drivers_nic-imx6q_sabrelite }
+	if {[have_board imx7d_sabre]}     { return drivers_nic-imx7d_sabre     }
+	if {[have_board imx8q_evk]}       { return drivers_nic-imx8q_evk       }
+	if {[have_board virt_qemu]}       { return drivers_nic-virt_qemu       }
 
 	puts stderr "drivers_nic package undefined for this build configuration"
 	exit 1

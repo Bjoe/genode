@@ -446,7 +446,8 @@ void Sandbox::Child::init(Cpu_session &session, Cpu_session_capability cap)
 
 Sandbox::Child::Route
 Sandbox::Child::resolve_session_request(Service::Name const &service_name,
-                                        Session_label const &label)
+                                        Session_label const &label,
+                                        Session::Diag const  diag)
 {
 	/* check for "config" ROM request */
 	if (service_name == Rom_session::service_name() &&
@@ -458,29 +459,7 @@ Sandbox::Child::resolve_session_request(Service::Name const &service_name,
 			               Session::Diag{false} };
 
 		/*
-		 * \deprecated  the support for the <configfile> tag will
-		 *              be removed
-		 */
-		if (_start_node->xml().has_sub_node("configfile")) {
-
-			typedef String<50> Name;
-			Name const rom =
-				_start_node->xml().sub_node("configfile")
-				                  .attribute_value("name", Name());
-
-			/* prevent infinite recursion */
-			if (rom == "config") {
-				error("configfile must not be named 'config'");
-				throw Service_denied();
-			}
-
-			return resolve_session_request(service_name,
-			                               prefixed_label(name(), rom));
-		}
-
-		/*
-		 * If there is neither an inline '<config>' nor a
-		 * '<configfile>' node present, we apply the regular session
+		 * If there is no inline '<config>', we apply the regular session
 		 * routing to the "config" ROM request.
 		 */
 	}
@@ -496,17 +475,16 @@ Sandbox::Child::resolve_session_request(Service::Name const &service_name,
 	 */
 	if (service_name == Rom_session::service_name() &&
 	    label == _unique_name && _unique_name != _binary_name)
-		return resolve_session_request(service_name, _binary_name);
+		return resolve_session_request(service_name, _binary_name, diag);
 
 	/* supply binary as dynamic linker if '<start ld="no">' */
 	if (!_use_ld && service_name == Rom_session::service_name() && label == "ld.lib.so")
-		return resolve_session_request(service_name, _binary_name);
+		return resolve_session_request(service_name, _binary_name, diag);
 
 	/* check for "session_requests" ROM request */
 	if (service_name == Rom_session::service_name()
 	 && label.last_element() == Session_requester::rom_name())
-		return Route { _session_requester.service(),
-		               Session::Label(), Session::Diag{false} };
+		return Route { _session_requester.service(), Session::Label(), diag };
 
 	try {
 		Xml_node route_node = _default_route_accessor.default_route();
@@ -539,7 +517,7 @@ Sandbox::Child::resolve_session_request(Service::Name const &service_name,
 					target.attribute_value("label", Label(label.string()));
 
 				Session::Diag const
-					target_diag { target.attribute_value("diag", false) };
+					target_diag { target.attribute_value("diag", diag.enabled) };
 
 				auto no_filter = [] (Service &) -> bool { return false; };
 
@@ -647,7 +625,7 @@ void Sandbox::Child::filter_session_args(Service::Name const &service,
 		 * allocating DMA memory (as the only use case for the constrain-phys
 		 * mechanism).
 		 */
-		if (_constrain_phys) {
+		if (_managing_system) {
 			addr_t start = 0;
 			addr_t size  = (sizeof(long) == 4) ? 0xc0000000UL : 0x100000000UL;
 
@@ -656,9 +634,11 @@ void Sandbox::Child::filter_session_args(Service::Name const &service,
 
 			Arg_string::set_arg(args, args_len, "phys_start", String<32>(Hex(start)).string());
 			Arg_string::set_arg(args, args_len, "phys_size",  String<32>(Hex(size)) .string());
+			Arg_string::set_arg(args, args_len, "managing_system", "yes");
 		} else {
 			Arg_string::remove_arg(args, "phys_start");
 			Arg_string::remove_arg(args, "phys_size");
+			Arg_string::remove_arg(args, "managing_system");
 		}
 	}
 }
@@ -685,8 +665,8 @@ Genode::Affinity Sandbox::Child::filter_session_affinity(Affinity const &session
 	/* subordinate session affinity to child affinity subspace */
 	Affinity::Location location(child_session
 	                            .multiply_position(session_space)
-	                            .transpose(session_location.xpos() * child_space.width(),
-	                                       session_location.ypos() * child_space.height()));
+	                            .transpose(session_location.xpos() * child_location.width(),
+	                                       session_location.ypos() * child_location.height()));
 
 	return Affinity(space, location);
 }

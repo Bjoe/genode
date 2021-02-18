@@ -34,6 +34,7 @@ using Genode::Exception;
 using Genode::Out_of_ram;
 using Genode::Out_of_caps;
 using Genode::Constructible;
+using Genode::Reconstructible;
 using Genode::Signal_context_capability;
 using Genode::Signal_transmitter;
 
@@ -281,6 +282,9 @@ void Interface::_pass_prot(Ethernet_frame       &eth,
                            size_t         const  prot_size)
 {
 	eth.src(_router_mac);
+	if (!_domain().use_arp()) {
+		eth.dst(_router_mac);
+	}
 	_update_checksum(prot, prot_base, prot_size, ip.src(), ip.dst(), ip.total_length());
 	_pass_ip(eth, size_guard, ip);
 }
@@ -318,7 +322,7 @@ Interface::_transport_rules(Domain &local_domain, L3_protocol const prot) const
 void Interface::_attach_to_domain_raw(Domain &domain)
 {
 	_domain = domain;
-	Signal_transmitter(_session_link_state_sigh).submit();
+	_policy.interface_ready();
 	_interfaces.remove(this);
 	domain.attach_interface(*this);
 }
@@ -330,7 +334,7 @@ void Interface::_detach_from_domain_raw()
 	domain.detach_interface(*this);
 	_interfaces.insert(this);
 	_domain = Pointer<Domain>();
-	Signal_transmitter(_session_link_state_sigh).submit();
+	_policy.interface_unready();
 
 	domain.tcp_stats().dissolve_interface(_tcp_stats);
 	domain.udp_stats().dissolve_interface(_udp_stats);
@@ -340,12 +344,41 @@ void Interface::_detach_from_domain_raw()
 }
 
 
+void Interface::_update_domain_object(Domain &new_domain) {
+
+	/* detach raw */
+	Domain &old_domain = _domain();
+	old_domain.interface_updates_domain_object(*this);
+	_interfaces.insert(this);
+	_domain = Pointer<Domain>();
+	_policy.interface_unready();
+
+	old_domain.tcp_stats().dissolve_interface(_tcp_stats);
+	old_domain.udp_stats().dissolve_interface(_udp_stats);
+	old_domain.icmp_stats().dissolve_interface(_icmp_stats);
+	old_domain.arp_stats().dissolve_interface(_arp_stats);
+	old_domain.dhcp_stats().dissolve_interface(_dhcp_stats);
+
+	/* attach raw */
+	_domain = new_domain;
+	_policy.interface_ready();
+	_interfaces.remove(this);
+	new_domain.attach_interface(*this);
+}
+
+
 void Interface::attach_to_domain()
 {
 	try {
-		_attach_to_domain_raw(_config().domains().find_by_name(
-			_policy.determine_domain_name()));
+		Domain &domain =
+			_config().domains().find_by_name(_policy.determine_domain_name());
 
+		_attach_to_domain_raw(domain);
+
+		/* construct DHCP client if the new domain needs it */
+		if (domain.ip_config_dynamic()) {
+			_dhcp_client.construct(_timer, *this);
+		}
 		attach_to_domain_finish();
 	}
 	catch (Domain_tree::No_match) { }
@@ -361,7 +394,7 @@ void Interface::attach_to_domain_finish()
 	Domain &domain = _domain();
 	Ipv4_config const &ip_config = domain.ip_config();
 	if (!ip_config.valid) {
-		_dhcp_client.discover();
+		_dhcp_client->discover();
 		return;
 	}
 	attach_to_ip_config(domain, ip_config);
@@ -376,12 +409,6 @@ void Interface::attach_to_ip_config(Domain            &domain,
 		_broadcast_arp_request(ip_config.interface.address,
 		                       le.object()->ip());
 	});
-}
-
-
-void Interface::session_link_state_sigh(Signal_context_capability sigh)
-{
-	_session_link_state_sigh = sigh;
 }
 
 
@@ -411,14 +438,15 @@ void Interface::detach_from_ip_config()
 void Interface::detach_from_remote_ip_config()
 {
 	/* only the DNS server address of the local DHCP server can be remote */
-	Signal_transmitter(_session_link_state_sigh).submit();
+	_policy.interface_unready();
+
 }
 
 
 void Interface::attach_to_remote_ip_config()
 {
 	/* only the DNS server address of the local DHCP server can be remote */
-	Signal_transmitter(_session_link_state_sigh).submit();
+	_policy.interface_ready();
 }
 
 
@@ -510,17 +538,21 @@ void Interface::_adapt_eth(Ethernet_frame          &eth,
 	if (!remote_ip_cfg.valid) {
 		throw Drop_packet("target domain has yet no IP config");
 	}
-	Ipv4_address const &hop_ip = remote_domain.next_hop(dst_ip);
-	try { eth.dst(remote_domain.arp_cache().find_by_ip(hop_ip).mac()); }
-	catch (Arp_cache::No_match) {
-		remote_domain.interfaces().for_each([&] (Interface &interface) {
-			interface._broadcast_arp_request(remote_ip_cfg.interface.address,
-			                                 hop_ip);
-		});
-		try { new (_alloc) Arp_waiter { *this, remote_domain, hop_ip, pkt }; }
-		catch (Out_of_ram)  { throw Free_resources_and_retry_handle_eth(); }
-		catch (Out_of_caps) { throw Free_resources_and_retry_handle_eth(); }
-		throw Packet_postponed();
+	if (remote_domain.use_arp()) {
+
+		Ipv4_address const &hop_ip = remote_domain.next_hop(dst_ip);
+		try { eth.dst(remote_domain.arp_cache().find_by_ip(hop_ip).mac()); }
+		catch (Arp_cache::No_match) {
+			remote_domain.interfaces().for_each([&] (Interface &interface) {
+				interface._broadcast_arp_request(remote_ip_cfg.interface.address,
+				                                 hop_ip);
+			});
+			try { new (_alloc) Arp_waiter { *this, remote_domain, hop_ip, pkt }; }
+			catch (Out_of_ram)  { throw Free_resources_and_retry_handle_eth(); }
+			catch (Out_of_caps) { throw Free_resources_and_retry_handle_eth(); }
+			throw Packet_postponed();
+		}
+
 	}
 }
 
@@ -620,8 +652,9 @@ void Interface::_send_dhcp_reply(Dhcp_server               const &dhcp_srv,
 		dhcp_opts.append_option<Dhcp_packet::Ip_lease_time>(dhcp_srv.ip_lease_time().value / 1000 / 1000);
 		dhcp_opts.append_option<Dhcp_packet::Subnet_mask>(local_intf.subnet_mask());
 		dhcp_opts.append_option<Dhcp_packet::Router_ipv4>(local_intf.address);
-		if (dhcp_srv.dns_server().valid()) {
-			dhcp_opts.append_option<Dhcp_packet::Dns_server_ipv4>(dhcp_srv.dns_server()); }
+		dhcp_srv.for_each_dns_server_ip([&] (Ipv4_address const &dns_server_ip) {
+			dhcp_opts.append_option<Dhcp_packet::Dns_server_ipv4>(dns_server_ip);
+		});
 		dhcp_opts.append_option<Dhcp_packet::Broadcast_addr>(local_intf.broadcast_address());
 		dhcp_opts.append_option<Dhcp_packet::Options_end>();
 
@@ -847,11 +880,11 @@ void Interface::_send_icmp_dst_unreachable(Ipv4_address_prefix const &local_intf
 
 bool Interface::link_state() const
 {
-	return _domain.valid() && _session_link_state;
+	return _policy.interface_link_state();
 }
 
 
-void Interface::handle_link_state()
+void Interface::handle_interface_link_state()
 {
 	struct Keep_ip_config : Exception { };
 	try {
@@ -871,7 +904,7 @@ void Interface::handle_link_state()
 	catch (Keep_ip_config) { }
 
 	/* force report if configured */
-	try { _config().report().handle_link_state(); }
+	try { _config().report().handle_interface_link_state(); }
 	catch (Pointer<Report>::Invalid) { }
 }
 
@@ -1094,15 +1127,34 @@ void Interface::_handle_ip(Ethernet_frame          &eth,
 
 				/* get DHCP packet */
 				Dhcp_packet &dhcp = udp.data<Dhcp_packet>(size_guard);
-				if (dhcp.op() == Dhcp_packet::REQUEST) {
-					try {
-						_handle_dhcp_request(eth, dhcp, local_domain);
-						return;
+				switch (dhcp.op()) {
+				case Dhcp_packet::REQUEST:
+
+					try { _handle_dhcp_request(eth, dhcp, local_domain); }
+					catch (Pointer<Dhcp_server>::Invalid) {
+						throw Drop_packet("DHCP request while DHCP server inactive");
 					}
-					catch (Pointer<Dhcp_server>::Invalid) { }
-				} else {
-					_dhcp_client.handle_ip(eth, size_guard);
 					return;
+
+				case Dhcp_packet::REPLY:
+
+					if (eth.dst() != router_mac() &&
+					    eth.dst() != Mac_address(0xff))
+					{
+						throw Drop_packet("Ethernet of DHCP reply doesn't target router"); }
+
+					if (dhcp.client_mac() != router_mac()) {
+						throw Drop_packet("DHCP reply doesn't target router"); }
+
+					if (!_dhcp_client.constructed()) {
+						throw Drop_packet("DHCP reply while DHCP client inactive"); }
+
+					_dhcp_client->handle_dhcp_reply(dhcp);
+					return;
+
+				default:
+
+					throw Drop_packet("Bad DHCP opcode");
 				}
 			}
 		}
@@ -1466,8 +1518,44 @@ void Interface::_handle_eth(Ethernet_frame           &eth,
 	} else {
 
 		switch (eth.type()) {
-		case Ethernet_frame::Type::IPV4: _dhcp_client.handle_ip(eth, size_guard); break;
-		default: throw Bad_network_protocol(); }
+		case Ethernet_frame::Type::IPV4: {
+
+			if (eth.dst() != router_mac() &&
+			    eth.dst() != Mac_address(0xff))
+			{
+				throw Drop_packet("Expecting Ethernet targeting the router"); }
+
+			Ipv4_packet &ip = eth.data<Ipv4_packet>(size_guard);
+			if (ip.protocol() != Ipv4_packet::Protocol::UDP) {
+				throw Drop_packet("Expecting UDP packet"); }
+
+			Udp_packet &udp = ip.data<Udp_packet>(size_guard);
+			if (!Dhcp_packet::is_dhcp(&udp)) {
+				throw Drop_packet("Expecting DHCP packet"); }
+
+			Dhcp_packet &dhcp = udp.data<Dhcp_packet>(size_guard);
+			switch (dhcp.op()) {
+			case Dhcp_packet::REPLY:
+
+				if (dhcp.client_mac() != router_mac()) {
+					throw Drop_packet("Expecting DHCP targeting the router"); }
+
+				if (!_dhcp_client.constructed()) {
+					throw Drop_packet("Expecting DHCP client to be active"); }
+
+				_dhcp_client->handle_dhcp_reply(dhcp);
+				break;
+
+			default:
+
+				throw Drop_packet("Expecting DHCP reply");
+			}
+			break;
+		}
+		default:
+
+			throw Bad_network_protocol();
+		}
 	}
 }
 
@@ -1629,12 +1717,10 @@ Interface::Interface(Genode::Entrypoint     &ep,
                      Interface_list         &interfaces,
                      Packet_stream_sink     &sink,
                      Packet_stream_source   &source,
-                     bool                   &session_link_state,
                      Interface_policy       &policy)
 :
 	_sink               { sink },
 	_source             { source },
-	_session_link_state { session_link_state },
 	_sink_ack           { ep, *this, &Interface::_ack_avail },
 	_sink_submit        { ep, *this, &Interface::_ready_to_submit },
 	_source_ack         { ep, *this, &Interface::_ready_to_ack },
@@ -1784,10 +1870,11 @@ void Interface::_update_icmp_links(Domain &cln_dom)
 void Interface::_update_dhcp_allocations(Domain &old_domain,
                                          Domain &new_domain)
 {
+	bool dhcp_clients_outdated { false };
 	try {
 		Dhcp_server &old_dhcp_srv = old_domain.dhcp_server();
 		Dhcp_server &new_dhcp_srv = new_domain.dhcp_server();
-		if (old_dhcp_srv.dns_server() != new_dhcp_srv.dns_server()) {
+		if (!old_dhcp_srv.dns_servers_equal_to_those_of(new_dhcp_srv)) {
 			throw Pointer<Dhcp_server>::Invalid();
 		}
 		if (old_dhcp_srv.ip_lease_time().value !=
@@ -1813,6 +1900,7 @@ void Interface::_update_dhcp_allocations(Domain &old_domain,
 				}
 			}
 			/* dismiss DHCP allocation */
+			dhcp_clients_outdated = true;
 			_dhcp_allocations.remove(allocation);
 			_destroy_dhcp_allocation(allocation, old_domain);
 		});
@@ -1820,6 +1908,7 @@ void Interface::_update_dhcp_allocations(Domain &old_domain,
 	catch (Pointer<Dhcp_server>::Invalid) {
 
 		/* dismiss all DHCP allocations */
+		dhcp_clients_outdated = true;
 		while (Dhcp_allocation *allocation = _dhcp_allocations.first()) {
 			if (_config().verbose()) {
 				log("[", new_domain, "] dismiss DHCP allocation: ",
@@ -1828,6 +1917,10 @@ void Interface::_update_dhcp_allocations(Domain &old_domain,
 			_dhcp_allocations.remove(*allocation);
 			_destroy_dhcp_allocation(*allocation, old_domain);
 		}
+	}
+	if (dhcp_clients_outdated) {
+		_policy.interface_unready();
+		_policy.interface_ready();
 	}
 }
 
@@ -1912,31 +2005,66 @@ void Interface::handle_config_2()
 {
 	Domain_name const &new_domain_name = _policy.determine_domain_name();
 	try {
-		/* if the domains differ, detach completely from the domain */
 		Domain &old_domain = domain();
-		Domain &new_domain = _config().domains().find_by_name(new_domain_name);
-		if (old_domain.name() != new_domain_name) {
-			_detach_from_domain();
-			_attach_to_domain_raw(new_domain);
+		try {
+			Domain &new_domain = _config().domains().find_by_name(new_domain_name);
+
+			/* if the domains differ, detach completely from the domain */
+			if (old_domain.name() != new_domain_name) {
+
+				_detach_from_domain();
+				_attach_to_domain_raw(new_domain);
+
+				/* destruct and construct DHCP client if required */
+				if (old_domain.ip_config_dynamic()) {
+					_dhcp_client.destruct();
+				}
+				if (new_domain.ip_config_dynamic()) {
+					_dhcp_client.construct(_timer, *this);
+				}
+				return;
+			}
+			_update_domain_object(new_domain);
+
+			/* destruct or construct DHCP client if IP-config type changes */
+			if (old_domain.ip_config_dynamic() &&
+			    !new_domain.ip_config_dynamic())
+			{
+				_dhcp_client.destruct();
+			}
+			if (!old_domain.ip_config_dynamic() &&
+			    new_domain.ip_config_dynamic())
+			{
+				_dhcp_client.construct(_timer, *this);
+			}
+
+			/* remember that the interface stays attached to the same domain */
+			_update_domain.construct(old_domain, new_domain);
 			return;
 		}
-		/* move to new domain object without considering any state objects */
-		_detach_from_domain_raw();
-		_attach_to_domain_raw(new_domain);
+		catch (Domain_tree::No_match) {
 
-		/* remember that the interface stays attached to the same domain */
-		_update_domain.construct(old_domain, new_domain);
-		return;
-	}
-	catch (Domain_tree::No_match) {
+			/* the interface no longer has a domain */
+			_detach_from_domain();
 
-		/* the interface no longer has a domain */
-		_detach_from_domain();
+			/* destruct DHCP client if it was constructed */
+			if (old_domain.ip_config_dynamic()) {
+				_dhcp_client.destruct();
+			}
+		}
 	}
 	catch (Pointer<Domain>::Invalid) {
 
 		/* the interface had no domain but now it may get one */
-		try { _attach_to_domain_raw(_config().domains().find_by_name(new_domain_name)); }
+		try {
+			Domain &new_domain = _config().domains().find_by_name(new_domain_name);
+			_attach_to_domain_raw(new_domain);
+
+			/* construct DHCP client if the new domain needs it */
+			if (new_domain.ip_config_dynamic()) {
+				_dhcp_client.construct(_timer, *this);
+			}
+		}
 		catch (Domain_tree::No_match) { }
 	}
 }

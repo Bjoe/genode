@@ -22,7 +22,7 @@
 /* Genode includes */
 #include <util/xml_generator.h>
 #include <input/event.h>
-#include <nitpicker_session/nitpicker_session.h>
+#include <gui_session/gui_session.h>
 #include <os/texture.h>
 
 /* local includes */
@@ -34,12 +34,14 @@ namespace Nitpicker { class View_owner; }
 
 struct Nitpicker::View_owner : Interface
 {
+	using Label = Gui::Session::Label;
+
 	/**
 	 * Return the owner's session label
 	 */
-	virtual Session::Label label() const { return Session::Label(""); }
+	virtual Label label() const { return Label(""); }
 
-	virtual bool matches_session_label(Session::Label const &) const { return false; }
+	virtual bool matches_session_label(Label const &) const { return false; }
 
 	virtual bool visible() const { return true; }
 
@@ -76,11 +78,6 @@ struct Nitpicker::View_owner : Interface
 	 * Return the owner's designated background view
 	 */
 	virtual View const *background() const { return nullptr; }
-
-	/**
-	 * Teturn texture containing the owners virtual frame buffer
-	 */
-	virtual Texture_base const *texture() const { return nullptr; }
 
 	/**
 	 * Return input-mask value at given position

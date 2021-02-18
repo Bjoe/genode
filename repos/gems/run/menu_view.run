@@ -35,23 +35,26 @@ install_config {
 		<provides><service name="Timer"/></provides>
 	</start>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
-		<provides>
-			<service name="Input"/> <service name="Framebuffer"/>
-		</provides>
 	</start>
 
 	<start name="nitpicker">
 		<resource name="RAM" quantum="4M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<config>
+			<capture/> <event/>
+
 			<background color="#123456"/>
 			<domain name="pointer" layer="1" content="client" label="no" origin="pointer" />
 			<domain name="default" layer="3" content="client" label="no" hover="always" />
@@ -64,9 +67,74 @@ install_config {
 	<start name="pointer">
 		<resource name="RAM" quantum="1M"/>
 		<route>
-			<service name="Nitpicker"> <child name="nitpicker" /> </service>
+			<service name="Gui"> <child name="nitpicker" /> </service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
+	</start>
+
+	<start name="fonts_fs_config_rom">
+		<resource name="RAM" quantum="4M"/>
+		<binary name="dynamic_rom"/>
+		<provides> <service name="ROM"/> </provides>
+		<config verbose="yes">
+			<rom name="config">
+
+				<inline description="small">
+					<config>
+						<vfs>
+							<rom name="Vera.ttf"/>
+							<rom name="VeraMono.ttf"/>
+							<dir name="fonts">
+								<dir name="title">
+									<ttf name="regular" path="/Vera.ttf" size_px="18" cache="256K"/>
+								</dir>
+								<dir name="text">
+									<ttf name="regular" path="/Vera.ttf" size_px="14" cache="256K"/>
+								</dir>
+								<dir name="annotation">
+									<ttf name="regular" path="/Vera.ttf" size_px="11" cache="256K"/>
+								</dir>
+								<dir name="monospace">
+									<ttf name="regular" path="/VeraMono.ttf" size_px="14" cache="256K"/>
+								</dir>
+							</dir>
+						</vfs>
+
+						<default-policy root="/fonts" />
+					</config>
+				</inline>
+
+				<sleep milliseconds="1000" />
+
+				<inline description="big">
+					<config>
+						<vfs>
+							<rom name="Vera.ttf"/>
+							<rom name="VeraMono.ttf"/>
+							<dir name="fonts">
+								<dir name="title">
+									<ttf name="regular" path="/Vera.ttf" size_px="28" cache="256K"/>
+								</dir>
+								<dir name="text">
+									<ttf name="regular" path="/Vera.ttf" size_px="24" cache="256K"/>
+								</dir>
+								<dir name="annotation">
+									<ttf name="regular" path="/Vera.ttf" size_px="21" cache="256K"/>
+								</dir>
+								<dir name="monospace">
+									<ttf name="regular" path="/VeraMono.ttf" size_px="24" cache="256K"/>
+								</dir>
+							</dir>
+						</vfs>
+
+						<default-policy root="/fonts" />
+					</config>
+				</inline>
+
+				<sleep milliseconds="1000" />
+
+			</rom>
+		</config>
 	</start>
 
 	<start name="dynamic_rom">
@@ -124,7 +192,7 @@ install_config {
 					</dialog>
 				</inline>
 
-				<sleep milliseconds="1000" />
+				<sleep milliseconds="3000" />
 
 				<inline description="dependency graph">
 					<dialog>
@@ -153,7 +221,7 @@ install_config {
 					</dialog>
 				</inline>
 
-				<sleep milliseconds="1000" />
+				<sleep milliseconds="3000" />
 
 				<inline description="example menu">
 					<dialog>
@@ -200,7 +268,7 @@ install_config {
 					</dialog>
 				</inline>
 
-				<sleep milliseconds="1000" />
+				<sleep milliseconds="3000" />
 
 				<inline description="example menu">
 					<dialog>
@@ -217,7 +285,7 @@ install_config {
 					</dialog>
 				</inline>
 
-				<sleep milliseconds="1000" />
+				<sleep milliseconds="3000" />
 
 			</rom>
 		</config>
@@ -233,7 +301,7 @@ install_config {
 		<resource name="RAM" quantum="8M"/>
 		<binary name="vfs"/>
 		<route>
-			<service name="ROM" label="config"> <parent label="fonts_fs.config"/> </service>
+			<service name="ROM" label="config"> <child name="fonts_fs_config_rom"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
 		<provides> <service name="File_system"/> </provides>

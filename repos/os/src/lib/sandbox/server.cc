@@ -86,7 +86,7 @@ Sandbox::Server::Service::resolve_session_request(Session_label const &label)
 				match = &service; });
 
 		if (!match || match->abandoned())
-			throw Service_denied();
+			throw Service_not_present();
 
 		return Route { *match, target_label };
 	}
@@ -212,7 +212,7 @@ void Sandbox::Server::_handle_create_session_request(Xml_node request,
 		 * Reduce session quota by local session costs
 		 */
 		char argbuf[Parent::Session_args::MAX_SIZE];
-		strncpy(argbuf, args.string(), sizeof(argbuf));
+		copy_cstring(argbuf, args.string(), sizeof(argbuf));
 
 		Cap_quota const cap_quota = cap_quota_from_args(argbuf);
 		Ram_quota const ram_quota = ram_quota_from_args(argbuf);
@@ -226,10 +226,12 @@ void Sandbox::Server::_handle_create_session_request(Xml_node request,
 
 		Arg_string::set_arg(argbuf, sizeof(argbuf), "ram_quota", forward_ram_quota.value);
 
+		Session::Diag const diag = session_diag_from_args(args.string());
+
 		Session_state &session =
 			route.service.create_session(route.service.factory(),
-		                                 _client_id_space, id, route.label,
-		                                 argbuf, Affinity());
+			                             _client_id_space, id, route.label,
+			                             diag, argbuf, Affinity::from_xml(request));
 
 		/* transfer session quota */
 		try {
@@ -401,7 +403,7 @@ void Sandbox::Server::apply_config(Xml_node config)
 			                                             session.client_label());
 
 			bool const route_unchanged = (route.service == session.service())
-			                          && (route.label == session.label());
+			                          && (route.label   == session.label());
 			if (!route_unchanged)
 				throw Service_denied();
 		}

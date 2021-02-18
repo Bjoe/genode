@@ -48,44 +48,44 @@ class Libc::Monitor : Interface
 {
 	public:
 
+		enum class Result { COMPLETE, TIMEOUT };
+
 		struct Job;
 		struct Pool;
 
-		struct Function : Interface { virtual bool execute() = 0; };
+		enum class Function_result { COMPLETE, INCOMPLETE };
+
+		struct Function : Interface { virtual Function_result execute() = 0; };
 
 	protected:
 
-		virtual bool _monitor(Genode::Lock &, Function &, uint64_t) = 0;
-		virtual void _charge_monitors() = 0;
+		virtual Result _monitor(Function &, uint64_t) = 0;
+		virtual void _trigger_monitor_examination() = 0;
 
 	public:
 
 		/**
-		 * Block until monitored execution succeeds or timeout expires
-		 *
-		 * The mutex must be locked when calling the monitor. It is released
-		 * during wait for completion and re-aquired before the function
-		 * returns. This behavior is comparable to condition variables.
+		 * Block until monitored execution completed or timeout expires
 		 *
 		 * Returns true if execution completed, false on timeout.
 		 */
 		template <typename FN>
-		bool monitor(Genode::Lock &mutex, FN const &fn, uint64_t timeout_ms = 0)
+		Result monitor(FN const &fn, uint64_t timeout_ms = 0)
 		{
 			struct _Function : Function
 			{
 				FN const &fn;
-				bool execute() override { return fn(); }
+				Function_result execute() override { return fn(); }
 				_Function(FN const &fn) : fn(fn) { }
 			} function { fn };
 
-			return _monitor(mutex, function, timeout_ms);
+			return _monitor(function, timeout_ms);
 		}
 
 		/**
-		 * Charge monitor to execute the monitored function
+		 * Trigger examination of monitored functions
 		 */
-		void charge_monitors() { _charge_monitors(); }
+		void trigger_monitor_examination() { _trigger_monitor_examination(); }
 };
 
 
@@ -103,7 +103,7 @@ struct Libc::Monitor::Job
 
 		virtual ~Job() { }
 
-		bool execute() { return _fn.execute(); }
+		bool execute() { return _fn.execute() == Function_result::COMPLETE; }
 
 		bool completed() const { return _blockade.woken_up(); }
 		bool expired()   const { return _blockade.expired(); }
@@ -117,48 +117,45 @@ struct Libc::Monitor::Pool
 {
 	private:
 
-		Registry<Job> _jobs;
-
-		Lock _mutex;
-		bool _execution_pending { false };
+		Monitor       &_monitor;
+		Registry<Job>  _jobs;
 
 	public:
 
-		void monitor(Genode::Lock &mutex, Job &job)
+		Pool(Monitor &monitor) : _monitor(monitor) { }
+
+		/* called by monitor-user context */
+		void monitor(Job &job)
 		{
 			Registry<Job>::Element element { _jobs, job };
 
-			mutex.unlock();
+			_monitor.trigger_monitor_examination();
 
 			job.wait_for_completion();
-
-			mutex.lock();
 		}
 
-		bool charge_monitors()
+		enum class State { JOBS_PENDING, ALL_COMPLETE };
+
+		/* called by the monitor context itself */
+		State execute_monitors()
 		{
-			Lock::Guard guard { _mutex };
-
-			bool const charged = !_execution_pending;
-			_execution_pending = true;
-			return charged;
-		}
-
-		void execute_monitors()
-		{
-			{
-				Lock::Guard guard { _mutex };
-
-				if (!_execution_pending) return;
-
-				_execution_pending = false;
-			}
+			State result = State::ALL_COMPLETE;
 
 			_jobs.for_each([&] (Job &job) {
-				if (!job.completed() && !job.expired() && job.execute()) {
-					job.complete();
+
+				if (!job.completed() && !job.expired()) {
+
+					bool const completed = job.execute();
+
+					if (completed)
+						job.complete();
+
+					if (!completed)
+						result = State::JOBS_PENDING;
 				}
 			});
+
+			return result;
 		}
 };
 

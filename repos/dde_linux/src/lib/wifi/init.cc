@@ -13,7 +13,7 @@
 
 /* Genode includes */
 #include <base/env.h>
-#include <base/lock.h>
+#include <base/blockade.h>
 
 /* local includes */
 #include <firmware_list.h>
@@ -113,7 +113,7 @@ struct net init_net;
 LIST_HEAD(net_namespace_list);
 
 
-static Genode::Lock *_wpa_lock;
+static Genode::Blockade *_wpa_blockade;
 
 
 static void run_linux(void *args)
@@ -146,7 +146,7 @@ static void run_linux(void *args)
 		Genode::sleep_forever();
 	}
 
-	_wpa_lock->unlock();
+	_wpa_blockade->wakeup();
 
 	_lx_init_done = true;
 
@@ -180,8 +180,11 @@ static void run_linux(void *args)
 unsigned long jiffies;
 
 
-void wifi_init(Genode::Env &env, Genode::Lock &lock, bool disable_11n,
-               Genode::Signal_context_capability rfkill)
+void wifi_init(Genode::Env                       &env,
+               Genode::Blockade                  &blockade,
+               bool                               disable_11n,
+               Genode::Signal_context_capability  rfkill,
+               Genode::Nic_driver_mode            mode)
 {
 	Lx_kit::construct_env(env);
 
@@ -194,7 +197,7 @@ void wifi_init(Genode::Env &env, Genode::Lock &lock, bool disable_11n,
 	LX_MUTEX_INIT(rfkill_global_mutex);
 	LX_MUTEX_INIT(rtnl_mutex);
 
-	_wpa_lock = &lock;
+	_wpa_blockade = &blockade;
 
 	INIT_LIST_HEAD(&init_net.dev_base_head);
 	/* add init_net namespace to namespace list */
@@ -208,7 +211,7 @@ void wifi_init(Genode::Env &env, Genode::Lock &lock, bool disable_11n,
 	Lx::Work::work_queue(&Lx_kit::env().heap());
 
 	Lx::socket_init(env.ep(), Lx_kit::env().heap());
-	Lx::nic_init(env, Lx_kit::env().heap());
+	Lx::nic_init(env, Lx_kit::env().heap(), mode);
 
 	Lx::pci_init(env, env.ram(), Lx_kit::env().heap());
 	Lx::malloc_init(env, Lx_kit::env().heap());

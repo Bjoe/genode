@@ -1,5 +1,5 @@
 /*
- * \brief  Fiasco pager framework
+ * \brief  Fiasco.OC pager framework
  * \author Norman Feske
  * \author Christian Helmuth
  * \author Stefan Kalkowski
@@ -16,7 +16,6 @@
 /* Genode includes */
 #include <base/env.h>
 #include <base/log.h>
-#include <base/lock.h>
 
 /* core includes */
 #include <pager.h>
@@ -25,10 +24,7 @@
 #include <base/internal/native_thread.h>
 
 /* Fiasco.OC includes */
-namespace Fiasco {
-#include <l4/sys/factory.h>
-#include <l4/sys/ipc.h>
-}
+#include <foc/syscall.h>
 
 using namespace Genode;
 
@@ -46,6 +42,7 @@ void Pager_entrypoint::entry()
 		reply_pending = false;
 
 		apply(_pager.badge(), [&] (Pager_object *obj) {
+
 			/* the pager_object might be destroyed, while we got the message */
 			if (!obj) {
 				warning("no pager object found!");
@@ -58,8 +55,8 @@ void Pager_entrypoint::entry()
 			case Ipc_pager::EXCEPTION:
 				{
 					if (_pager.exception()) {
-						Lock::Guard guard(obj->state.lock);
-						_pager.get_regs(obj->state);
+						Mutex::Guard guard(obj->state.mutex);
+						_pager.get_regs(obj->state.state);
 						obj->state.exceptions++;
 						obj->state.in_exception = true;
 						obj->submit_exception_signal();
@@ -95,11 +92,11 @@ void Pager_entrypoint::entry()
 					_pager.acknowledge_wakeup();
 
 					{
-						Lock::Guard guard(obj->state.lock);
+						Mutex::Guard guard(obj->state.mutex);
 						/* revert exception flag */
 						obj->state.in_exception = false;
 						/* set new register contents */
-						_pager.set_regs(obj->state);
+						_pager.set_regs(obj->state.state);
 					}
 
 					/* send wake up message to requested thread */
@@ -114,8 +111,8 @@ void Pager_entrypoint::entry()
 			 */
 			case Ipc_pager::PAUSE:
 				{
-					Lock::Guard guard(obj->state.lock);
-					_pager.get_regs(obj->state);
+					Mutex::Guard guard(obj->state.mutex);
+					_pager.get_regs(obj->state.state);
 					obj->state.exceptions++;
 					obj->state.in_exception = true;
 
@@ -150,7 +147,7 @@ void Pager_entrypoint::dissolve(Pager_object &obj)
 
 Pager_capability Pager_entrypoint::manage(Pager_object &obj)
 {
-	using namespace Fiasco;
+	using namespace Foc;
 
 	Native_capability cap(_cap_factory.alloc(Thread::_thread_cap));
 

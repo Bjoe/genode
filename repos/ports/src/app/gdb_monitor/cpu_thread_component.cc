@@ -149,14 +149,14 @@ int Cpu_thread_component::deliver_signal(int signo)
 		}
 
 		/*
-		 * The lock guard prevents an interruption by
+		 * The mutex guard prevents an interruption by
 		 * 'genode_stop_all_threads()', which could cause
 		 * the new thread to be resumed when it should be
 		 * stopped.
 		 */
 
-		Lock::Guard stop_new_threads_lock_guard(
-			_cpu_session_component.stop_new_threads_lock());
+		Mutex::Guard stop_new_threads_mutex_guard(
+			_cpu_session_component.stop_new_threads_mutex());
 
 		if (!_cpu_session_component.stop_new_threads())
 			resume();
@@ -237,7 +237,26 @@ void Cpu_thread_component::start(addr_t ip, addr_t sp)
 
 void Cpu_thread_component::pause()
 {
-	_parent_cpu_thread.pause();
+	unsigned loop_cnt = 0;
+
+	/* required semantic for gdb is that thread is paused with valid state */
+	for (;;) {
+
+		_parent_cpu_thread.pause();
+
+		try {
+			/* check if the thread state is valid */
+			_parent_cpu_thread.state();
+			/* the thread is paused */
+			return;
+		} catch (State_access_failed) {
+			loop_cnt ++;
+
+			if (loop_cnt % 100 == 0)
+				Genode::warning("pausing thread failed ", loop_cnt,
+				                ". times, continue looping");
+		}
+	}
 }
 
 
@@ -250,12 +269,6 @@ void Cpu_thread_component::resume()
 void Cpu_thread_component::single_step(bool enable)
 {
 	_parent_cpu_thread.single_step(enable);
-}
-
-
-void Cpu_thread_component::cancel_blocking()
-{
-	_parent_cpu_thread.cancel_blocking();
 }
 
 

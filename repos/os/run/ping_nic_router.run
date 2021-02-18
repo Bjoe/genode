@@ -1,6 +1,5 @@
-if {[have_spec foc] || [have_spec odroid_xu] || [have_spec linux] ||
-    [have_spec rpi3] ||
-    [expr [have_spec imx53] && [have_spec trustzone]]} {
+if {[have_spec foc] || [have_spec linux] || [have_board rpi3] ||
+    [have_board imx53_qsb_tz]} {
 	puts "Run script is not supported on this platform."
 	exit 0
 }
@@ -49,8 +48,8 @@ append config {
 		<provides><service name="Timer"/></provides>
 	</start>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1000" managing_system="yes">
+		<resource name="RAM" quantum="32M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
@@ -62,7 +61,10 @@ append config {
 
 	<start name="nic_router" caps="200">
 		<resource name="RAM" quantum="10M"/>
-		<provides><service name="Nic"/></provides>
+		<provides>
+			<service name="Nic"/>
+			<service name="Uplink"/>
+		</provides>
 		<config verbose="no"
 		        verbose_packets="no"
 		        dhcp_discover_timeout_sec="1"
@@ -82,6 +84,9 @@ append config {
 				<udp dst="} [good_dst_ip] {/24">
 					<permit port="} [bad_dst_port] {" domain="uplink"/>
 				</udp>
+				<dhcp-server ip_first="10.0.4.2"
+				             ip_last="10.0.4.200"
+				             ip_lease_time_sec="4"/>
 			</domain>
 
 			<domain name="ping_1" interface="10.0.3.1/24">
@@ -98,7 +103,10 @@ append config {
 	<start name="ping_2_nic_router" caps="200">
 		<binary name="nic_router"/>
 		<resource name="RAM" quantum="10M"/>
-		<provides><service name="Nic"/></provides>
+		<provides>
+			<service name="Nic"/>
+			<service name="Uplink"/>
+		</provides>
 		<config verbose="no"
 		        verbose_packets="no"
 		        icmp_idle_timeout_sec="10">
@@ -106,7 +114,7 @@ append config {
 			<policy label_prefix="ping_2" domain="ping_2"/>
 			<uplink                       domain="uplink"/>
 
-			<domain name="uplink" interface="10.0.4.2/24" gateway="10.0.4.1">
+			<domain name="uplink">
 				<nat domain="ping_2" icmp-ids="100" udp-ports="100"/>
 			</domain>
 
@@ -218,16 +226,8 @@ append config {
 install_config $config
 build_boot_image { ping }
 
-proc qemu_nic_model {} {
-	if [have_spec x86]         { return e1000 }
-	if [have_spec lan9118]     { return lan9118 }
-	if [have_spec zynq]        { return cadence_gem }
-	return nic_model_missing
-}
-
 append qemu_args " -nographic "
-append qemu_args " -netdev user,id=net0 "
-append qemu_args " -net nic,model=[qemu_nic_model],netdev=net0 "
+append_qemu_nic_args
 
 set done_string ""
 for {set i 0} {$i < 3} {incr i 1} {

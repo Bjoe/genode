@@ -70,6 +70,18 @@ void Session_state::generate_session_request(Xml_generator &xml) const
 			xml.node("args", [&] () {
 				xml.append_sanitized(Server_args(*this).string());
 			});
+			xml.node("affinity", [&] () {
+				xml.node("space", [&] () {
+					xml.attribute("width",  _affinity.space().width());
+					xml.attribute("height", _affinity.space().height());
+				});
+				xml.node("location", [&] () {
+					xml.attribute("xpos",   _affinity.location().xpos());
+					xml.attribute("ypos",   _affinity.location().ypos());
+					xml.attribute("width",  _affinity.location().width());
+					xml.attribute("height", _affinity.location().height());
+				});
+			});
 		});
 		break;
 
@@ -160,6 +172,7 @@ Session_state::Session_state(Service                  &service,
                              Id_space<Parent::Client> &client_id_space,
                              Parent::Client::Id        client_id,
                              Session::Label     const &label,
+                             Session::Diag      const  diag,
                              Args const               &args,
                              Affinity           const &affinity)
 :
@@ -167,5 +180,5 @@ Session_state::Session_state(Service                  &service,
 	_donated_ram_quota(ram_quota_from_args(args.string())),
 	_donated_cap_quota(cap_quota_from_args(args.string())),
 	_id_at_client(*this, client_id_space, client_id),
-	_label(label), _args(args), _affinity(affinity)
+	_label(label), _diag(diag), _args(args), _affinity(affinity)
 { }

@@ -1,6 +1,6 @@
-if {[have_spec imx6q_sabrelite] ||
-    [have_spec imx7d_sabre] ||
-    ([get_cmd_switch --autopilot] && [have_spec linux]) ||
+if {[have_board imx6q_sabrelite] ||
+    [have_board imx7d_sabre] ||
+    ([get_cmd_switch --autopilot] && [have_board linux]) ||
     ([get_cmd_switch --autopilot] && [have_include "power_on/qemu"])} {
 	puts "Run script does not support this platform."
 	exit 0
@@ -41,17 +41,16 @@ install_config {
 		<provides><service name="Timer"/></provides>
 	</start>
 
-	<start name="drivers" caps="1500">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
-		<provides>
-			<service name="Input"/> <service name="Framebuffer"/>
-		</provides>
 	</start>
 
 	<start name="report_rom">
@@ -69,7 +68,7 @@ install_config {
 	<start name="nitpicker_config">
 		<binary name="rom_filter"/>
 		<resource name="RAM" quantum="1096K"/>
-		<provides><service name="ROM"/></provides>
+		<provides> <service name="ROM"/> </provides>
 		<config>
 			<input name="xray_enabled" rom="xray" node="xray">
 				<attribute name="enabled" /> </input>
@@ -79,6 +78,7 @@ install_config {
 				<inline>
 					<report focus="yes" xray="yes" hover="yes" keystate="yes"
 					        clicked="yes"/>
+					<capture/> <event/>
 					<domain name="pointer" layer="1" origin="pointer"
 					        content="client" label="no"/>
 					<domain name="panel" layer="2"
@@ -147,12 +147,13 @@ install_config {
 		</route>
 	</start>
 
-	<start name="nitpicker" caps="110">
+	<start name="nitpicker" caps="120">
 		<resource name="RAM" quantum="1216K"/>
-		<provides><service name="Nitpicker"/></provides>
-		<configfile name="nitpicker.config"/>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<route>
-			<service name="ROM" label="nitpicker.config">
+			<service name="ROM" label="config">
 				<child name="nitpicker_config"/> </service>
 			<service name="ROM" label="focus">
 				<child name="report_rom"/> </service>
@@ -186,7 +187,7 @@ install_config {
 	</start>
 
 	<start name="scout" caps="10000">
-		<resource name="RAM" quantum="64M" />
+		<resource name="RAM" quantum="80M" />
 	</start>
 </config>}
 
@@ -200,12 +201,12 @@ puts $launchpad_config_fd {<config>
 	<launcher name="launchpad" ram_quota="6M"   caps="1000">
 		<configfile name="launchpad.config" />
 	</launcher>
-	<launcher name="nitlog"    ram_quota="1M" caps="70"/>
-	<launcher name="liquid_fb" ram_quota="7M" caps="70">
+	<launcher name="nitlog"    ram_quota="1M" caps="100"/>
+	<launcher name="liquid_fb" ram_quota="9M" caps="100">
 		<config resize_handle="on" />
 	</launcher>
-	<launcher name="nitpicker" ram_quota="1M" caps="70">
-		<config>
+	<launcher name="nitpicker" ram_quota="1M" caps="100">
+		<config request_input="yes" request_framebuffer="yes">
 			<domain name="" layer="3" conten="client" label="no" focus="click"/>
 			<default-policy domain="" />
 		</config>

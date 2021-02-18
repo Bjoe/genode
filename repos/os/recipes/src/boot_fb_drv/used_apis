@@ -1,4 +1,5 @@
 base
 os
-framebuffer_session
+blit
+capture_session
 timer_session

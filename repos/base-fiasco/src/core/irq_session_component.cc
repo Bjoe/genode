@@ -19,14 +19,11 @@
 #include <irq_root.h>
 #include <util.h>
 
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/ipc.h>
-#include <l4/sys/syscalls.h>
-#include <l4/sys/types.h>
-}
+/* L4/Fiasco includes */
+#include <fiasco/syscall.h>
 
 using namespace Genode;
+
 
 bool Irq_object::_associate()
 {
@@ -74,7 +71,9 @@ void Irq_object::_wait_for_irq()
 		            L4_IPC_SHORT_MSG, &dw0, &dw1,
 		            L4_IPC_NEVER, &result);
 
-		if (L4_IPC_IS_ERROR(result)) error("Ipc error ", L4_IPC_ERROR(result));
+		if (L4_IPC_IS_ERROR(result))
+			error("Ipc error ", L4_IPC_ERROR(result));
+
 	} while (L4_IPC_IS_ERROR(result));
 }
 
@@ -82,7 +81,7 @@ void Irq_object::_wait_for_irq()
 void Irq_object::start()
 {
 	::Thread::start();
-	_sync_bootup.lock();
+	_sync_bootup.block();
 }
 
 
@@ -94,10 +93,10 @@ void Irq_object::entry()
 	}
 
 	/* thread is up and ready */
-	_sync_bootup.unlock();
+	_sync_bootup.wakeup();
 
 	/* wait for first ack_irq */
-	_sync_ack.lock();
+	_sync_ack.block();
 
 	while (true) {
 
@@ -106,17 +105,16 @@ void Irq_object::entry()
 		if (!_sig_cap.valid())
 			continue;
 
-		Genode::Signal_transmitter(_sig_cap).submit(1);
+		Signal_transmitter(_sig_cap).submit(1);
 
-		_sync_ack.lock();
+		_sync_ack.block();
 	}
 }
 
 
 Irq_object::Irq_object(unsigned irq)
 :
-	Thread_deprecated<4096>("irq"),
-	_sync_ack(Lock::LOCKED), _sync_bootup(Lock::LOCKED),
+	Thread(Weight::DEFAULT_WEIGHT, "irq", 4096 /* stack */, Type::NORMAL),
 	_irq(irq)
 { }
 
@@ -143,7 +141,7 @@ Irq_session_component::Irq_session_component(Range_allocator &irq_alloc,
 
 Irq_session_component::~Irq_session_component()
 {
-	error("Not yet implemented.");
+	error(__func__, " - not implemented");
 }
 
 
@@ -153,13 +151,13 @@ void Irq_session_component::ack_irq()
 }
 
 
-void Irq_session_component::sigh(Genode::Signal_context_capability cap)
+void Irq_session_component::sigh(Signal_context_capability cap)
 {
 	_irq_object.sigh(cap);
 }
 
 
-Genode::Irq_session::Info Irq_session_component::info()
+Irq_session::Info Irq_session_component::info()
 {
 	/* no MSI support */
 	return { .type = Info::Type::INVALID, .address = 0, .value = 0 };

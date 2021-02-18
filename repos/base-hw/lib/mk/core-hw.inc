@@ -7,10 +7,9 @@
 LIBS += base-hw-common cxx
 
 # add include paths
-INC_DIR += $(BASE_DIR)/../base-hw/src/core
-INC_DIR += $(BASE_DIR)/src/core/include
-INC_DIR += $(BASE_DIR)/../base-hw/src/include
-INC_DIR += $(BASE_DIR)/src/include
+REP_INC_DIR += src/core
+REP_INC_DIR += src/core/include
+REP_INC_DIR += src/include
 
 # add C++ sources
 SRC_CC += cpu_session_component.cc
@@ -72,7 +71,10 @@ include $(BASE_DIR)/src/core/version.inc
 NR_OF_CPUS ?= 1
 CC_OPT += -Wa,--defsym -Wa,NR_OF_CPUS=$(NR_OF_CPUS) -DNR_OF_CPUS=$(NR_OF_CPUS)
 
+TMP         := $(call select_from_repositories,lib/mk/core-hw.inc)
+BASE_HW_DIR := $(TMP:%lib/mk/core-hw.inc=%)
+
 # declare source locations
-vpath % $(BASE_DIR)/../base-hw/src/core
+vpath % $(BASE_HW_DIR)/src/core
 vpath % $(BASE_DIR)/src/core
 vpath % $(BASE_DIR)/src/lib/startup

@@ -83,7 +83,7 @@ void Irq_object::_wait_for_irq()
 void Irq_object::start()
 {
 	::Thread::start();
-	_sync_bootup.lock();
+	_sync_bootup.block();
 }
 
 
@@ -93,10 +93,10 @@ void Irq_object::entry()
 		error("could not associate with IRQ ", Hex(_irq));
 
 	/* thread is up and ready */
-	_sync_bootup.unlock();
+	_sync_bootup.wakeup();
 
 	/* wait for first ack_irq */
-	_sync_ack.lock();
+	_sync_ack.block();
 
 	while (true) {
 
@@ -110,15 +110,14 @@ void Irq_object::entry()
 
 		Genode::Signal_transmitter(_sig_cap).submit(1);
 
-		_sync_ack.lock();
+		_sync_ack.block();
 	}
 }
 
 
 Irq_object::Irq_object(unsigned irq)
 :
-	Thread_deprecated<4096>("irq"),
-	_sync_ack(Lock::LOCKED), _sync_bootup(Lock::LOCKED),
+	Thread(Weight::DEFAULT_WEIGHT, "irq", 4096 /* stack */, Type::NORMAL),
 	_irq(irq)
 { }
 
@@ -166,7 +165,7 @@ void Irq_session_component::sigh(Genode::Signal_context_capability cap)
 }
 
 
-Genode::Irq_session::Info Irq_session_component::info()
+Irq_session::Info Irq_session_component::info()
 {
 	/* no MSI support */
 	return { .type = Info::Type::INVALID, .address = 0, .value = 0 };

@@ -8,24 +8,22 @@ import_from_depot [depot_user]/src/[base_src] \
                   [depot_user]/src/report_rom \
                   [depot_user]/src/fs_rom \
                   [depot_user]/src/fs_report \
-                  [depot_user]/src/ram_fs \
                   [depot_user]/src/nitpicker \
                   [depot_user]/src/init \
                   [depot_user]/src/libc \
                   [depot_user]/src/wm \
                   [depot_user]/src/themed_decorator \
                   [depot_user]/src/nic_router \
-                  [depot_user]/src/nit_fb \
-                  [depot_user]/src/nit_fader \
+                  [depot_user]/src/gui_fb \
+                  [depot_user]/src/gui_fader \
                   [depot_user]/src/libpng \
                   [depot_user]/src/zlib \
                   [depot_user]/src/menu_view \
                   [depot_user]/src/fs_query \
                   [depot_user]/src/rom_filter \
-                  [depot_user]/src/noux \
                   [depot_user]/src/terminal \
                   [depot_user]/src/posix \
-                  [depot_user]/src/ram_block \
+                  [depot_user]/src/vfs_block \
                   [depot_user]/src/part_block \
                   [depot_user]/src/rump \
                   [depot_user]/src/ncurses \
@@ -33,7 +31,10 @@ import_from_depot [depot_user]/src/[base_src] \
                   [depot_user]/src/bash-minimal \
                   [depot_user]/src/vim-minimal \
                   [depot_user]/src/coreutils-minimal \
-                  [depot_user]/src/e2fsprogs-minimal \
+                  [depot_user]/src/fs_utils \
+                  [depot_user]/src/vfs_pipe \
+                  [depot_user]/src/vfs_import \
+                  [depot_user]/src/stdin2out \
                   [depot_user]/src/gpt_write \
                   [depot_user]/src/text_area \
                   [depot_user]/src/sandbox \
@@ -64,17 +65,16 @@ install_config {
 		<provides> <service name="Timer"/> </provides>
 	</start>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
-		<provides>
-			<service name="Input"/> <service name="Framebuffer"/>
-		</provides>
 	</start>
 
 	<start name="report_rom">
@@ -92,8 +92,11 @@ install_config {
 
 	<start name="nitpicker">
 		<resource name="RAM" quantum="4M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<config focus="rom">
+			<capture/> <event/>
 			<report hover="yes" displays="yes"/>
 			<background color="#000000"/>
 			<domain name="pointer" layer="1" content="client" label="no" origin="pointer" />
@@ -111,24 +114,27 @@ install_config {
 	<start name="pointer">
 		<resource name="RAM" quantum="1M"/>
 		<route>
-			<service name="Nitpicker"> <child name="nitpicker" /> </service>
+			<service name="Gui"> <child name="nitpicker" /> </service>
 			<any-service> <parent/> <any-child/> </any-service>
 		</route>
 	</start>
 
 	<start name="config_fs">
-		<binary name="ram_fs"/>
+		<binary name="vfs"/>
 		<resource name="RAM" quantum="4M"/>
 		<provides> <service name="File_system"/> </provides>
 		<config>
-			<content>
-				<dir name="managed">
-					<rom name="fonts.config"         as="fonts"/>
-					<inline name="runtime"><config/></inline>
-					<inline name="depot_query"><query/></inline>
-				</dir>
-				<inline name="deploy"></inline>
-			</content>
+			<vfs>
+				<ram/>
+				<import>
+					<dir name="managed">
+						<rom name="fonts" label="fonts.config"/>
+						<inline name="runtime"><config/></inline>
+						<inline name="depot_query"><query/></inline>
+					</dir>
+					<inline name="deploy"></inline>
+				</import>
+			</vfs>
 			<default-policy root="/" writeable="yes"/>
 		</config>
 	</start>
@@ -145,11 +151,16 @@ install_config {
 	</start>
 
 	<start name="report_fs">
-		<binary name="ram_fs"/>
+		<binary name="vfs"/>
 		<resource name="RAM" quantum="4M"/>
 		<provides> <service name="File_system"/> </provides>
 		<config>
-			<content> <inline name="log">See the core log for messages.</inline> </content>
+			<vfs>
+				<ram/>
+				<import>
+					<inline name="log">See the core log for messages.</inline>
+				</import>
+			</vfs>
 			<policy label="ro" root="/"/>
 			<default-policy root="/" writeable="yes"/>
 		</config>
@@ -216,17 +227,26 @@ install_config {
 	</start>
 
 	<start name="ahci-2">
-		<binary name="ram_block"/>
-		<resource name="RAM" quantum="10M"/>
-		<config nofile="ahci-1.img" size="8M" block_size="512"/>
+		<binary name="vfs_block"/>
+		<resource name="RAM" quantum="12M"/>
 		<provides> <service name="Block"/> </provides>
+		<config>
+			<vfs>
+				<ram/>
+				<import>
+					<zero name="block_file" size="8M"/>
+				</import>
+			</vfs>
+			<default-policy file="/block_file" block_size="512"
+			                writeable="yes"/>
+		</config>
 	</start>
 
 	<start name="leitzentrale" caps="2300">
 		<binary name="init"/>
 		<resource name="RAM" quantum="122M"/>
 		<provides>
-			<service name="Nitpicker"/>
+			<service name="Gui"/>
 			<service name="File_system"/>
 			<service name="Report"/>
 			<service name="ROM"/>
@@ -236,7 +256,7 @@ install_config {
 				<child name="leitzentrale_config"/> </service>
 			<service name="ROM" label_prefix="manager -> config -> ">
 				<child name="config_rom"/> </service>
-			<service name="Nitpicker"> <child name="nitpicker"/> </service>
+			<service name="Gui"> <child name="nitpicker"/> </service>
 			<service name="Timer"> <child name="timer"/> </service>
 			<service name="File_system" label="config">
 				<child name="config_fs" label="rw"/> </service>
@@ -273,9 +293,13 @@ install_config {
 				<child name="config_rom"/> </service>
 			<service name="ROM" label_prefix="leitzentrale ->">
 				<child name="leitzentrale"/> </service>
-			<service name="ROM" label="inspect terminal -> clipboard">
+			<service name="ROM" label="inspect -> clipboard">
 				<child name="report_rom" label="clipboard"/> </service>
 			<service name="ROM" label="editor -> clipboard">
+				<child name="report_rom" label="clipboard"/> </service>
+			<service name="ROM" label_last="cached_fs_rom"> <!-- for Linux -->
+				<parent label="fs_rom"/> </service>
+			<service name="Report" label="inspect -> clipboard">
 				<child name="report_rom" label="clipboard"/> </service>
 			<service name="Report" label="editor -> clipboard">
 				<child name="report_rom" label="clipboard"/> </service>
@@ -288,9 +312,9 @@ install_config {
 			<service name="Block" label_last="ahci-1"> <child name="ahci-1"/> </service>
 			<service name="Block" label_last="ahci-2"> <child name="ahci-2"/> </service>
 			<service name="Block"> <child name="drivers"/> </service>
-			<service name="Nitpicker" label_prefix="leitzentrale">
+			<service name="Gui" label_prefix="leitzentrale">
 				<child name="leitzentrale"/> </service>
-			<service name="Nitpicker"> <child name="nitpicker"/> </service>
+			<service name="Gui"> <child name="nitpicker"/> </service>
 			<service name="Timer"> <child name="timer"/> </service>
 			<service name="Report" label_prefix="leitzentrale ->">
 				<child name="leitzentrale"/> </service>
@@ -344,16 +368,6 @@ install_rom_module usb_active_config {
 build { server/lx_block app/menu_view app/sculpt_manager }
 
 build_boot_image { lx_block menu_view sculpt_manager ahci-1.img }
-
-if {[have_spec linux]} {
-	set max_fds [exec bash -c "ulimit -n"]
-	if {$max_fds < 4096} {
-		puts stderr "\nMaximum number of file descriptors is too low for this run script."
-		puts stderr "You may use the following command to increase the limit:\n"
-		puts stderr "  ulimit -n 4096\n"
-		exit 1
-	}
-}
 
 run_genode_until forever
 

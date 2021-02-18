@@ -85,6 +85,25 @@ void Popup_dialog::_gen_pkg_elements(Xml_generator &xml,
 		});
 	});
 
+	if (_resources.constructed() && component.affinity_space.total() > 1) {
+		xml.node("frame", [&] {
+			xml.node("vbox", [&] () {
+				bool const selected = _route_selected(_resources->start_name());
+
+				if (!selected)
+					_gen_route_entry(xml, _resources->start_name(),
+					                 "Resource assignment ...", false, "enter");
+
+				if (selected) {
+					_gen_route_entry(xml, "back", "Resource assignment ...",
+					                 true, "back");
+
+					_resources->generate(xml);
+				}
+			});
+		});
+	}
+
 	/*
 	 * Display "Add component" button once all routes are defined
 	 */
@@ -403,11 +422,19 @@ void Popup_dialog::click(Action &action)
 
 	else if (_state == ROUTE_SELECTED) {
 
+		/*
+		 * Keep the routing selection open when clicking on the "Add component"
+		 * button. Otherwise, the change of the dialog size (while folding the
+		 * route selection) would result in the unhovering of the operaton
+		 * button. So the clack would go elsewhere.
+		 */
+		bool const click_on_operation = _action_item.hovered("launch");
+
 		/* back to index */
 		if (clicked == "back") {
 			back_to_index();
 
-		} else {
+		} else if (!click_on_operation) {
 
 			/* close selected route */
 			if (clicked_route == "back") {
@@ -456,6 +483,12 @@ void Popup_dialog::click(Action &action)
 				if (!clicked_on_selected_route && clicked_route.valid()) {
 					_state = ROUTE_SELECTED;
 					_selected_route.construct(clicked_route);
+				}
+
+				if (_resources.constructed()) {
+					action.apply_to_construction([&] (Component &component) {
+						_resources->click(component);
+					});
 				}
 			}
 		}

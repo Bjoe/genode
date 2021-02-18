@@ -1,7 +1,7 @@
 TARGET  := usb_hid_drv
 SRC_C   := dummies.c
 SRC_CC  := main.cc lx_emul.cc evdev.cc
-SRC_CC  += printf.cc timer.cc scheduler.cc malloc.cc env.cc work.cc
+SRC_CC  += printf.cc timer.cc scheduler.cc env.cc work.cc
 
 LIBS    := base usb_hid_include lx_kit_setjmp
 
@@ -11,9 +11,11 @@ INC_DIR += $(USB_CONTRIB_DIR)/drivers/usb/core
 INC_DIR += $(PRG_DIR)
 INC_DIR += $(REP_DIR)/src/include
 
+SRC_C += drivers/hid/hid-apple.c
 SRC_C += drivers/hid/hid-cherry.c
 SRC_C += drivers/hid/hid-core.c
 SRC_C += drivers/hid/hid-generic.c
+SRC_C += drivers/hid/hid-holtek-mouse.c
 SRC_C += drivers/hid/hid-input.c
 SRC_C += drivers/hid/hid-microsoft.c
 SRC_C += drivers/hid/hid-multitouch.c

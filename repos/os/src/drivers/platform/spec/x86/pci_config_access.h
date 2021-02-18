@@ -15,12 +15,44 @@
 #ifndef _X86_PCI_CONFIG_ACCESS_H_
 #define _X86_PCI_CONFIG_ACCESS_H_
 
-#include <util/bit_array.h>
 #include <base/attached_io_mem_dataspace.h>
 #include <base/attached_rom_dataspace.h>
 #include <platform_device/platform_device.h>
+#include <util/bit_array.h>
+#include <util/mmio.h>
 
 using namespace Genode;
+
+namespace Platform { namespace Pci { struct Bdf; struct Config; } }
+
+
+struct Platform::Pci::Bdf
+{
+	unsigned bus, device, function;
+
+	static Bdf from_value(uint16_t const bdf)
+	{
+		return Bdf { .bus      = (bdf >> 8) & 0xffu,
+		             .device   = (bdf >> 3) & 0x1fu,
+		             .function =  bdf       & 0x07u };
+	}
+
+	uint16_t value() const {
+		return ((bus & 0xff) << 8) | ((device & 0x1f) << 3) | (function & 7); }
+
+	bool operator == (Bdf const &other) const {
+		return value() == other.value(); }
+
+	void print(Genode::Output &out) const
+	{
+		using Genode::print;
+		using Genode::Hex;
+		print(out, Hex(bus, Hex::Prefix::OMIT_PREFIX, Hex::Pad::PAD),
+		      ":", Hex(device, Hex::Prefix::OMIT_PREFIX, Hex::Pad::PAD),
+		      ".", Hex(function, Hex::Prefix::OMIT_PREFIX));
+	}
+};
+
 
 namespace Platform {
 
@@ -34,17 +66,11 @@ namespace Platform {
 			/**
 			 * Calculate device offset from BDF
 			 *
-			 * \param bus       target PCI bus ID  (0..255)
-			 * \param device    target device ID   (0..31)
-			 * \param function  target function ID (0..7)
-			 *
 			 * \return device base address
 			 */
-			unsigned _dev_base(int bus, int device, int function)
+			unsigned _dev_base(Pci::Bdf const bdf)
 			{
-				return ((bus      << 20) |
-				        (device   << 15) |
-				        (function << 12));
+				return unsigned(bdf.value()) << 12;
 			}
 
 			Genode::Bit_array<256> _used { };
@@ -72,9 +98,7 @@ namespace Platform {
 			/**
 			 * Read value from config space of specified device/function
 			 *
-			 * \param bus       target PCI bus ID
-			 * \param device    target device ID
-			 * \param function  target function ID
+			 * \param bdf       target PCI bus, device & function ID
 			 * \param addr      target byte within targeted PCI config space
 			 * \param size      bit width of read access
 			 *
@@ -82,12 +106,11 @@ namespace Platform {
 			 *
 			 * There is no range check for the input values.
 			 */
-			unsigned read(int bus, int device, int function,
-			              unsigned char addr, Device::Access_size size,
-			              bool track = true)
+			unsigned read(Pci::Bdf const bdf, unsigned char const addr,
+			              Device::Access_size const size, bool const track = true)
 			{
 				unsigned ret;
-				unsigned const offset = _dev_base(bus, device, function) + addr;
+				unsigned const offset = _dev_base(bdf) + addr;
 				char const * const field = _pciconf.local_addr<char>() + offset;
 
 				if (offset >= _pciconf_size)
@@ -129,20 +152,18 @@ namespace Platform {
 			/**
 			 * Write to config space of specified device/function
 			 *
-			 * \param bus       target PCI bus ID
-			 * \param device    target device ID
-			 * \param function  target function ID
+			 * \param bdf       target PCI bus, device & function ID
 			 * \param addr      target byte within targeted PCI config space
 			 * \param value     value to be written
 			 * \param size      bit width of write access
 			 *
 			 * There is no range check for the input values.
 			 */
-			void write(int bus, int device, int function, unsigned char addr,
-			           unsigned value, Device::Access_size size,
-			           bool track = true)
+			void write(Pci::Bdf const bdf, unsigned char const addr,
+			           unsigned const value, Device::Access_size const size,
+			           bool const track = true)
 			{
-				unsigned const offset = _dev_base(bus, device, function) + addr;
+				unsigned const offset = _dev_base(bdf) + addr;
 				char const * const field = _pciconf.local_addr<char>() + offset;
 
 				if (offset >= _pciconf_size)
@@ -189,5 +210,65 @@ namespace Platform {
 			}
 	};
 }
+
+/**
+ * Type-safe, fine-grained access to a PCI config space of a device
+ *
+ * It is similar to Genode::Mmio but uses Config_access as backend.
+ */
+struct Platform::Pci::Config: Register_set<Platform::Pci::Config>
+{
+	private:
+
+		friend Register_set_plain_access;
+
+		Config_access &_config;
+		Pci::Bdf       _bdf;
+		uint16_t       _cap;
+
+		template <typename ACCESS_T>
+		inline ACCESS_T _read(off_t const &offset) const
+		{
+			addr_t const cap = _cap + offset;
+
+			if (sizeof(ACCESS_T) == 1)
+				return _config.read(_bdf, cap, Device::ACCESS_8BIT);
+			if (sizeof(ACCESS_T) == 2)
+				return _config.read(_bdf, cap, Device::ACCESS_16BIT);
+			if (sizeof(ACCESS_T) == 4)
+				return _config.read(_bdf, cap, Device::ACCESS_32BIT);
+
+			warning("unsupported read ", sizeof(ACCESS_T));
+			return 0;
+		}
+
+		template <typename ACCESS_T>
+		inline void _write(off_t const offset, ACCESS_T const value)
+		{
+			addr_t const cap = _cap + offset;
+
+			switch (sizeof(ACCESS_T)) {
+			case 1 :
+				_config.write(_bdf, cap, value, Device::ACCESS_8BIT);
+				break;
+			case 2 :
+				_config.write(_bdf, cap, value, Device::ACCESS_16BIT);
+				break;
+			case 4 :
+				_config.write(_bdf, cap, value, Device::ACCESS_32BIT);
+				break;
+			default:
+				warning("unsupported write ", sizeof(ACCESS_T));
+			}
+		}
+
+	public:
+
+		Config(Config_access &config, Pci::Bdf const &bdf, uint16_t cap)
+		:
+			Register_set<Config>(*this), _config(config), _bdf(bdf), _cap(cap)
+		{ }
+
+};
 
 #endif /* _X86_PCI_CONFIG_ACCESS_H_ */

@@ -119,6 +119,7 @@ class Net::Domain : public Domain_base,
 		bool                            const _verbose_packets;
 		bool                            const _verbose_packet_drop;
 		bool                            const _icmp_echo_server;
+		bool                            const _use_arp;
 		Genode::Session_label           const _label;
 		Domain_link_stats                     _udp_stats            { };
 		Domain_link_stats                     _tcp_stats            { };
@@ -142,6 +143,18 @@ class Net::Domain : public Domain_base,
 
 		void _log_ip_config() const;
 
+		void _prepare_reconstructing_ip_config();
+
+		void _finish_reconstructing_ip_config();
+
+		template <typename FUNC>
+		void _reconstruct_ip_config(FUNC && functor)
+		{
+			_prepare_reconstructing_ip_config();
+			functor(_ip_config);
+			_finish_reconstructing_ip_config();
+		}
+
 		void __FIXME__dissolve_foreign_arp_waiters();
 
 	public:
@@ -162,12 +175,7 @@ class Net::Domain : public Domain_base,
 
 		Ipv4_address const &next_hop(Ipv4_address const &ip) const;
 
-		void ip_config(Ipv4_config const &ip_config);
-
-		void ip_config(Ipv4_address ip,
-		               Ipv4_address subnet_mask,
-		               Ipv4_address gateway,
-		               Ipv4_address dns_server);
+		void ip_config_from_dhcp_ack(Dhcp_packet &dhcp_ack);
 
 		void discard_ip_config();
 
@@ -178,6 +186,8 @@ class Net::Domain : public Domain_base,
 		void attach_interface(Interface &interface);
 
 		void detach_interface(Interface &interface);
+
+		void interface_updates_domain_object(Interface &interface);
 
 		void raise_rx_bytes(Genode::size_t bytes) { _rx_bytes += bytes; }
 
@@ -200,6 +210,7 @@ class Net::Domain : public Domain_base,
 		bool                         verbose_packets()     const { return _verbose_packets; }
 		bool                         verbose_packet_drop() const { return _verbose_packet_drop; }
 		bool                         icmp_echo_server()    const { return _icmp_echo_server; }
+		bool                         use_arp()             const { return _use_arp; }
 		Genode::Session_label const &label()               const { return _label; }
 		Ipv4_config           const &ip_config()           const { return *_ip_config; }
 		List<Domain>                &ip_config_dependents()      { return _ip_config_dependents; }
@@ -224,6 +235,7 @@ class Net::Domain : public Domain_base,
 		Domain_link_stats           &icmp_stats()                { return _icmp_stats; }
 		Domain_object_stats         &arp_stats()                 { return _arp_stats; }
 		Domain_object_stats         &dhcp_stats()                { return _dhcp_stats; }
+		bool                         ip_config_dynamic() const   { return _ip_config_dynamic; };
 };
 
 #endif /* _DOMAIN_H_ */

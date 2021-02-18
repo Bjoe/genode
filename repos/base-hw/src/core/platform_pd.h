@@ -72,7 +72,7 @@ class Hw::Address_space : public Genode::Address_space
 		using Table = Hw::Page_table;
 		using Array = Table::Allocator::Array<DEFAULT_TRANSLATION_TABLE_MAX>;
 
-		Genode::Lock                _lock { };           /* table lock      */
+		Genode::Mutex               _mutex { };          /* table lock      */
 		Table                     & _tt;                 /* table virt addr */
 		Genode::addr_t              _tt_phys;            /* table phys addr */
 		Array                     * _tt_array = nullptr;
@@ -119,6 +119,8 @@ class Hw::Address_space : public Genode::Address_space
 		bool insert_translation(Genode::addr_t virt, Genode::addr_t phys,
 		                        Genode::size_t size, Genode::Page_flags flags);
 
+		bool lookup_translation(Genode::addr_t const virt,
+		                        Genode::addr_t & phys);
 
 		/*****************************
 		 ** Address-space interface **

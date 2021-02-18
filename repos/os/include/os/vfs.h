@@ -526,17 +526,14 @@ class Genode::File_content
 		template <typename STRING, typename FN>
 		void for_each_line(FN const &fn) const
 		{
-			if (_buffer.size == 0)
-				return;
-
 			char const *src           = _buffer.ptr;
 			char const *curr_line     = src;
 			size_t      curr_line_len = 0;
 
 			for (size_t n = 0; ; n++) {
 
-				char const c = *src++;
-				bool const end_of_data = (c == 0 || n == _buffer.size);
+				char const c = (n == _buffer.size) ? 0 : *src++;
+				bool const end_of_data = (c == 0);
 				bool const end_of_line = (c == '\n');
 
 				if (!end_of_data && !end_of_line) {
@@ -613,7 +610,11 @@ class Genode::Watcher
 			_watch(fs, alloc, rel_path, handler);
 		}
 
-		~Watcher() { _handle->fs().close(_handle); }
+		~Watcher()
+		{
+			if (_handle)
+				_handle->fs().close(_handle);
+		}
 };
 
 
@@ -629,7 +630,7 @@ class Genode::Watch_handler : public Vfs::Watch_response_handler,
 
 	public:
 
-		Watch_handler(Directory &dir, Directory::Path const &rel_path,
+		Watch_handler(Directory const &dir, Directory::Path const &rel_path,
 		              T &obj, void (T::*member)())
 		:
 			Watcher(dir, rel_path, *this), _obj(obj), _member(member)

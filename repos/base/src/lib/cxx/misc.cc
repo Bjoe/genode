@@ -41,29 +41,16 @@ extern "C" void __pure_virtual()
 }
 
 
-/**
- * Prototype for exit-handler support function provided by '_main.cc'
+/*
+ * Plain Genode components do not support the atexit mechanism.
+ *
+ * To accommodate applications that depend on this mechansim, the libc
+ * overrides this weak no-op function with a working implementation.
  */
-extern int genode___cxa_atexit(void(*func)(void*), void *arg,
-                               void *dso_handle);
-
-
-extern "C" int __cxa_atexit(void(*func)(void*), void *arg,
-                            void *dso_handle)
+extern "C" __attribute__((weak))
+int __cxa_atexit(void(*)(void*), void *, void *)
 {
-	return genode___cxa_atexit(func, arg, dso_handle);
-}
-
-
-/**
- * Prototype for finalize support function provided by '_main.cc'
- */
-extern int genode___cxa_finalize(void *dso);
-
-
-extern "C" void __cxa_finalize(void *dso)
-{
-	genode___cxa_finalize(dso);
+	return -1;
 }
 
 
@@ -71,11 +58,10 @@ extern "C" void __cxa_finalize(void *dso)
  ** Support required for ARM EABI **
  ***********************************/
 
-
-extern "C" int __aeabi_atexit(void *arg, void(*func)(void*),
-                              void *dso_handle)
+extern "C" __attribute__((weak))
+int __aeabi_atexit(void *, void(*)(void*), void *)
 {
-	return genode___cxa_atexit(func, arg, dso_handle);
+	return -1;
 }
 
 
@@ -117,10 +103,6 @@ extern "C" void abort(void)
 		name = myself->name();
 
 	Genode::warning("abort called - thread: ", name.string());
-
-	/* Notify the parent of failure */
-	if (name != "main")
-		genode_exit(1);
 
 	Genode::sleep_forever();
 }
@@ -197,7 +179,8 @@ extern "C" int strncmp(const char *s1, const char *s2, size_t n)
 
 extern "C" char *strcpy(char *dest, const char *src)
 {
-	return Genode::strncpy(dest, src, ~0UL);
+	Genode::copy_cstring(dest, src, ~0UL);
+	return dest;
 }
 
 
@@ -243,10 +226,10 @@ void Genode::cxx_demangle(char const *symbol, char *out, size_t size)
 {
 	char *demangled_name = __cxxabiv1::__cxa_demangle(symbol, nullptr, nullptr, nullptr);
 	if (demangled_name) {
-		Genode::strncpy(out, demangled_name, size);
+		Genode::copy_cstring(out, demangled_name, size);
 		free(demangled_name);
 	} else {
-		Genode::strncpy(out, symbol, size);
+		Genode::copy_cstring(out, symbol, size);
 	}
 }
 

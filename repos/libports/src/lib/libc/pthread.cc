@@ -14,10 +14,12 @@
 
 /* Genode includes */
 #include <base/log.h>
-#include <base/sleep.h>
 #include <base/thread.h>
 #include <util/list.h>
 #include <libc/allocator.h>
+
+/* Genode-internal includes */
+#include <base/internal/unmanaged_singleton.h>
 
 /* libc includes */
 #include <errno.h>
@@ -29,8 +31,7 @@
 #include <internal/init.h>
 #include <internal/kernel.h>
 #include <internal/pthread.h>
-#include <internal/resume.h>
-#include <internal/suspend.h>
+#include <internal/monitor.h>
 #include <internal/time.h>
 #include <internal/timer.h>
 
@@ -39,20 +40,27 @@ using namespace Libc;
 
 
 static Thread         *_main_thread_ptr;
-static Resume         *_resume_ptr;
-static Suspend        *_suspend_ptr;
+static Monitor        *_monitor_ptr;
 static Timer_accessor *_timer_accessor_ptr;
 
 
-void Libc::init_pthread_support(Suspend &suspend, Resume &resume,
-                                Timer_accessor &timer_accessor)
+void Libc::init_pthread_support(Monitor &monitor, Timer_accessor &timer_accessor)
 {
 	_main_thread_ptr    = Thread::myself();
-	_suspend_ptr        = &suspend;
-	_resume_ptr         = &resume;
+	_monitor_ptr        = &monitor;
 	_timer_accessor_ptr = &timer_accessor;
 }
 
+
+static Libc::Monitor & monitor()
+{
+	struct Missing_call_of_init_pthread_support : Genode::Exception { };
+	if (!_monitor_ptr)
+		throw Missing_call_of_init_pthread_support();
+	return *_monitor_ptr;
+}
+
+namespace { using Fn = Libc::Monitor::Function_result; }
 
 /*************
  ** Pthread **
@@ -71,47 +79,33 @@ void Libc::Pthread::Thread_object::entry()
 
 void Libc::Pthread::join(void **retval)
 {
-	struct Check : Suspend_functor
-	{
-		bool retry { false };
+	monitor().monitor([&] {
+		Genode::Mutex::Guard guard(_mutex);
 
-		Pthread &_thread;
+		if (!_exiting)
+			return Fn::INCOMPLETE;
 
-		Check(Pthread &thread) : _thread(thread) { }
+		if (retval)
+			*retval = _retval;
+		return Fn::COMPLETE;
+	});
+}
 
-		bool suspend() override
-		{
-			retry = !_thread._exiting;
-			return retry;
-		}
-	} check(*this);
 
-	struct Missing_call_of_init_pthread_support : Exception { };
-	if (!_suspend_ptr)
-		throw Missing_call_of_init_pthread_support();
-
-	do {
-		_suspend_ptr->suspend(check);
-	} while (check.retry);
-
-	_join_lock.lock();
-
-	if (retval)
-		*retval = _retval;
+int Libc::Pthread::detach()
+{
+	_detach_blockade.wakeup();
+	return 0;
 }
 
 
 void Libc::Pthread::cancel()
 {
+	Genode::Mutex::Guard guard(_mutex);
+
 	_exiting = true;
 
-	struct Missing_call_of_init_pthread_support : Exception { };
-	if (!_resume_ptr)
-		throw Missing_call_of_init_pthread_support();
-
-	_resume_ptr->resume_all();
-
-	_join_lock.unlock();
+	monitor().trigger_monitor_examination();
 }
 
 
@@ -122,8 +116,8 @@ void Libc::Pthread::cancel()
 void Libc::Pthread_registry::insert(Pthread &thread)
 {
 	/* prevent multiple insertions at the same location */
-	static Lock insert_lock;
-	Lock::Guard insert_lock_guard(insert_lock);
+	static Mutex insert_mutex;
+	Mutex::Guard guard(insert_mutex);
 
 	for (unsigned int i = 0; i < MAX_NUM_PTHREADS; i++) {
 		if (_array[i] == 0) {
@@ -156,6 +150,20 @@ bool Libc::Pthread_registry::contains(Pthread &thread)
 			return true;
 
 	return false;
+}
+
+
+void Libc::Pthread_registry::cleanup(Pthread *new_cleanup_thread)
+{
+	static Mutex cleanup_mutex;
+	Mutex::Guard guard(cleanup_mutex);
+
+	if (_cleanup_thread) {
+		Libc::Allocator alloc { };
+		destroy(alloc, _cleanup_thread);
+	}
+
+	_cleanup_thread = new_cleanup_thread;
 }
 
 
@@ -210,7 +218,7 @@ class pthread_mutex : Genode::Noncopyable
 	protected:
 
 		pthread_t _owner      { nullptr };
-		Lock      _data_mutex;
+		Mutex     _data_mutex;
 
 		/* _data_mutex must be hold when calling the following methods */
 
@@ -249,11 +257,11 @@ class pthread_mutex : Genode::Noncopyable
 
 			_append_applicant(&applicant);
 
-			_data_mutex.unlock();
+			_data_mutex.release();
 
 			blockade.block();
 
-			_data_mutex.lock();
+			_data_mutex.acquire();
 
 			if (blockade.woken_up()) {
 				return true;
@@ -275,7 +283,7 @@ class pthread_mutex : Genode::Noncopyable
 		/**
 		 * Enqueue current context as applicant for mutex
 		 *
-		 * Return true if mutex was aquired, false on timeout expiration.
+		 * Return true if mutex was acquired, false on timeout expiration.
 		 */
 		bool _apply_for_mutex(pthread_t thread, Libc::uint64_t timeout_ms)
 		{
@@ -323,7 +331,7 @@ struct Libc::Pthread_mutex_normal : pthread_mutex
 	{
 		pthread_t const myself = pthread_self();
 
-		Lock::Guard lock_guard(_data_mutex);
+		Mutex::Guard guard(_data_mutex);
 
 		/* fast path without lock contention */
 		if (_try_lock(myself) == 0)
@@ -338,7 +346,7 @@ struct Libc::Pthread_mutex_normal : pthread_mutex
 	{
 		pthread_t const myself = pthread_self();
 
-		Lock::Guard lock_guard(_data_mutex);
+		Mutex::Guard guard(_data_mutex);
 
 		/* fast path without lock contention - does not check abstimeout according to spec */
 		if (_try_lock(myself) == 0)
@@ -361,14 +369,14 @@ struct Libc::Pthread_mutex_normal : pthread_mutex
 	{
 		pthread_t const myself = pthread_self();
 
-		Lock::Guard lock_guard(_data_mutex);
+		Mutex::Guard guard(_data_mutex);
 
 		return _try_lock(myself);
 	}
 
 	int unlock() override final
 	{
-		Lock::Guard lock_guard(_data_mutex);
+		Mutex::Guard guard(_data_mutex);
 
 		if (_owner != pthread_self())
 			return EPERM;
@@ -397,7 +405,7 @@ struct Libc::Pthread_mutex_errorcheck : pthread_mutex
 	{
 		pthread_t const myself = pthread_self();
 
-		Lock::Guard lock_guard(_data_mutex);
+		Mutex::Guard guard(_data_mutex);
 
 		/* fast path without lock contention (or deadlock) */
 		int const result = _try_lock(myself);
@@ -419,14 +427,14 @@ struct Libc::Pthread_mutex_errorcheck : pthread_mutex
 	{
 		pthread_t const myself = pthread_self();
 
-		Lock::Guard lock_guard(_data_mutex);
+		Mutex::Guard guard(_data_mutex);
 
 		return _try_lock(myself);
 	}
 
 	int unlock() override final
 	{
-		Lock::Guard lock_guard(_data_mutex);
+		Mutex::Guard guard(_data_mutex);
 
 		if (_owner != pthread_self())
 			return EPERM;
@@ -460,7 +468,7 @@ struct Libc::Pthread_mutex_recursive : pthread_mutex
 	{
 		pthread_t const myself = pthread_self();
 
-		Lock::Guard lock_guard(_data_mutex);
+		Mutex::Guard guard(_data_mutex);
 
 		/* fast path without lock contention */
 		if (_try_lock(myself) == 0)
@@ -480,14 +488,14 @@ struct Libc::Pthread_mutex_recursive : pthread_mutex
 	{
 		pthread_t const myself = pthread_self();
 
-		Lock::Guard lock_guard(_data_mutex);
+		Mutex::Guard guard(_data_mutex);
 
 		return _try_lock(myself);
 	}
 
 	int unlock() override final
 	{
-		Lock::Guard lock_guard(_data_mutex);
+		Mutex::Guard guard(_data_mutex);
 
 		if (_owner != pthread_self())
 			return EPERM;
@@ -500,6 +508,15 @@ struct Libc::Pthread_mutex_recursive : pthread_mutex
 		return 0;
 	}
 };
+
+
+/*
+ * The pthread_cond implementation uses the POSIX semaphore API
+ * internally that does not have means to set the clock. For this
+ * reason the private 'sem_set_clock' function is introduced,
+ * see 'semaphore.cc' for the implementation.
+*/
+extern "C" int sem_set_clock(sem_t *sem, clockid_t clock_id);
 
 
 extern "C" {
@@ -516,6 +533,9 @@ extern "C" {
 		return 0;
 	}
 
+	typeof(pthread_join) _pthread_join
+		__attribute__((alias("pthread_join")));
+
 
 	int pthread_attr_init(pthread_attr_t *attr)
 	{
@@ -527,6 +547,9 @@ extern "C" {
 
 		return 0;
 	}
+
+	typeof(pthread_attr_init) _pthread_attr_init
+		__attribute__((alias("pthread_attr_init")));
 
 
 	int pthread_attr_destroy(pthread_attr_t *attr)
@@ -541,6 +564,9 @@ extern "C" {
 		return 0;
 	}
 
+	typeof(pthread_attr_destroy) _pthread_attr_destroy
+		__attribute__((alias("pthread_attr_destroy")));
+
 
 	int pthread_cancel(pthread_t thread)
 	{
@@ -552,8 +578,10 @@ extern "C" {
 	void pthread_exit(void *value_ptr)
 	{
 		pthread_self()->exit(value_ptr);
-		sleep_forever();
 	}
+
+	typeof(pthread_exit) _pthread_exit
+		__attribute__((alias("pthread_exit")));
 
 
 	/* special non-POSIX function (for example used in libresolv) */
@@ -588,20 +616,49 @@ extern "C" {
 		/*
 		 * We create a pthread object associated to the main thread's Thread
 		 * object. We ensure the pthread object does never get deleted by
-		 * allocating it in heap via new(). Otherwise, the static destruction
-		 * of the pthread object would also destruct the 'Thread' of the main
-		 * thread.
+		 * allocating it as unmanaged_singleton. Otherwise, the static
+		 * destruction of the pthread object would also destruct the 'Thread'
+		 * of the main thread.
 		 */
-		Libc::Allocator alloc { };
-		static pthread *main = new (alloc) pthread(*Thread::myself());
-		return main;
+		return unmanaged_singleton<pthread>(*Thread::myself());
 	}
+
+	typeof(pthread_self) _pthread_self
+		__attribute__((alias("pthread_self")));
 
 
 	pthread_t thr_self(void) { return pthread_self(); }
 
 	__attribute__((alias("thr_self")))
 	pthread_t __sys_thr_self(void);
+
+
+	int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate)
+	{
+		if (!attr || !*attr || !detachstate)
+			return EINVAL;
+
+		*detachstate = (*attr)->detach_state;
+
+		return 0;
+	}
+
+	typeof(pthread_attr_getdetachstate) _pthread_attr_getdetachstate
+		__attribute__((alias("pthread_attr_getdetachstate")));
+
+
+	int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate)
+	{
+		if (!attr || !*attr)
+			return EINVAL;
+
+		(*attr)->detach_state = detachstate;
+
+		return 0;
+	}
+
+	typeof(pthread_attr_setdetachstate) _pthread_attr_setdetachstate
+		__attribute__((alias("pthread_attr_setdetachstate")));
 
 
 	int pthread_attr_setstacksize(pthread_attr_t *attr, size_t stacksize)
@@ -622,6 +679,9 @@ extern "C" {
 
 		return 0;
 	}
+
+	typeof(pthread_attr_setstacksize) _pthread_attr_setstacksize
+		__attribute__((alias("pthread_attr_setstacksize")));
 
 
 	int pthread_attr_getstack(const pthread_attr_t *attr,
@@ -644,12 +704,18 @@ extern "C" {
 		return pthread_attr_getstack(attr, stackaddr, &stacksize);
 	}
 
+	typeof(pthread_attr_getstackaddr) _pthread_attr_getstackaddr
+		__attribute__((alias("pthread_attr_getstackaddr")));
+
 
 	int pthread_attr_getstacksize(const pthread_attr_t *attr, size_t *stacksize)
 	{
 		void *stackaddr;
 		return pthread_attr_getstack(attr, &stackaddr, stacksize);
 	}
+
+	typeof(pthread_attr_getstacksize) _pthread_attr_getstacksize
+		__attribute__((alias("pthread_attr_getstacksize")));
 
 
 	int pthread_attr_get_np(pthread_t pthread, pthread_attr_t *attr)
@@ -668,6 +734,18 @@ extern "C" {
 	{
 		return (t1 == t2);
 	}
+
+	typeof(pthread_equal) _pthread_equal
+		__attribute__((alias("pthread_equal")));
+
+
+	int pthread_detach(pthread_t thread)
+	{
+		return thread->detach();
+	}
+
+	typeof(pthread_detach) _pthread_detach
+		__attribute__((alias("pthread_detach")));
 
 
 	void __pthread_cleanup_push_imp(void (*routine)(void*), void *arg,
@@ -697,6 +775,9 @@ extern "C" {
 		return 0;
 	}
 
+	typeof(pthread_mutexattr_init) _pthread_mutexattr_init
+		__attribute__((alias("pthread_mutexattr_init")));
+
 
 	int pthread_mutexattr_destroy(pthread_mutexattr_t *attr)
 	{
@@ -710,6 +791,9 @@ extern "C" {
 		return 0;
 	}
 
+	typeof(pthread_mutexattr_destroy) _pthread_mutexattr_destroy
+		__attribute__((alias("pthread_mutexattr_destroy")));
+
 
 	int pthread_mutexattr_settype(pthread_mutexattr_t *attr, int type)
 	{
@@ -720,6 +804,9 @@ extern "C" {
 
 		return 0;
 	}
+
+	typeof(pthread_mutexattr_settype) _pthread_mutexattr_settype
+		__attribute__((alias("pthread_mutexattr_settype")));
 
 
 	int pthread_mutex_init(pthread_mutex_t *mutex,
@@ -734,9 +821,10 @@ extern "C" {
 		pthread_mutextype const type = (!attr || !*attr)
 		                             ? PTHREAD_MUTEX_NORMAL : (*attr)->type;
 		switch (type) {
-		case PTHREAD_MUTEX_NORMAL:     *mutex = new (alloc) Pthread_mutex_normal; break;
-		case PTHREAD_MUTEX_ERRORCHECK: *mutex = new (alloc) Pthread_mutex_errorcheck; break;
-		case PTHREAD_MUTEX_RECURSIVE:  *mutex = new (alloc) Pthread_mutex_recursive; break;
+		case PTHREAD_MUTEX_NORMAL:      *mutex = new (alloc) Pthread_mutex_normal; break;
+		case PTHREAD_MUTEX_ADAPTIVE_NP: *mutex = new (alloc) Pthread_mutex_normal; break;
+		case PTHREAD_MUTEX_ERRORCHECK:  *mutex = new (alloc) Pthread_mutex_errorcheck; break;
+		case PTHREAD_MUTEX_RECURSIVE:   *mutex = new (alloc) Pthread_mutex_recursive; break;
 
 		default:
 			*mutex = nullptr;
@@ -745,6 +833,9 @@ extern "C" {
 
 		return 0;
 	}
+
+	typeof(pthread_mutex_init) _pthread_mutex_init
+		__attribute__((alias("pthread_mutex_init")));
 
 
 	int pthread_mutex_destroy(pthread_mutex_t *mutex)
@@ -759,6 +850,9 @@ extern "C" {
 		return 0;
 	}
 
+	typeof(pthread_mutex_destroy) _pthread_mutex_destroy
+		__attribute__((alias("pthread_mutex_destroy")));
+
 
 	int pthread_mutex_lock(pthread_mutex_t *mutex)
 	{
@@ -771,6 +865,9 @@ extern "C" {
 		return (*mutex)->lock();
 	}
 
+	typeof(pthread_mutex_lock) _pthread_mutex_lock
+		__attribute__((alias("pthread_mutex_lock")));
+
 
 	int pthread_mutex_trylock(pthread_mutex_t *mutex)
 	{
@@ -782,6 +879,9 @@ extern "C" {
 
 		return (*mutex)->trylock();
 	}
+
+	typeof(pthread_mutex_trylock) _pthread_mutex_trylock
+		__attribute__((alias("pthread_mutex_trylock")));
 
 
 	int pthread_mutex_timedlock(pthread_mutex_t *mutex,
@@ -809,6 +909,9 @@ extern "C" {
 		return (*mutex)->unlock();
 	}
 
+	typeof(pthread_mutex_unlock) _pthread_mutex_unlock
+		__attribute__((alias("pthread_mutex_unlock")));
+
 
 	/* Condition variable */
 
@@ -826,11 +929,16 @@ extern "C" {
 		sem_t           signal_sem;
 		sem_t           handshake_sem;
 
-		pthread_cond() : num_waiters(0), num_signallers(0)
+		pthread_cond(clockid_t clock_id) : num_waiters(0), num_signallers(0)
 		{
 			pthread_mutex_init(&counter_mutex, nullptr);
 			sem_init(&signal_sem, 0, 0);
 			sem_init(&handshake_sem, 0, 0);
+
+			if (sem_set_clock(&signal_sem, clock_id)) {
+				struct Invalid_timedwait_clock { };
+				throw Invalid_timedwait_clock();
+			}
 		}
 
 		~pthread_cond()
@@ -842,12 +950,25 @@ extern "C" {
 	};
 
 
+	struct pthread_cond_attr
+	{
+		clockid_t clock_id { CLOCK_REALTIME };
+	};
+
+
 	int pthread_condattr_init(pthread_condattr_t *attr)
 	{
+		static Mutex condattr_init_mutex { };
+
 		if (!attr)
 			return EINVAL;
 
-		*attr = nullptr;
+		try {
+			Mutex::Guard guard(condattr_init_mutex);
+			Libc::Allocator alloc { };
+			*attr = new (alloc) pthread_cond_attr;
+			return 0;
+		} catch (...) { return ENOMEM; }
 
 		return 0;
 	}
@@ -855,9 +976,12 @@ extern "C" {
 
 	int pthread_condattr_destroy(pthread_condattr_t *attr)
 	{
-		/* assert that the attr was produced by the init no-op */
-		if (!attr || *attr != nullptr)
+		if (!attr)
 			return EINVAL;
+
+		Libc::Allocator alloc { };
+		destroy(alloc, *attr);
+		*attr = nullptr;
 
 		return 0;
 	}
@@ -866,11 +990,10 @@ extern "C" {
 	int pthread_condattr_setclock(pthread_condattr_t *attr,
 	                              clockid_t clock_id)
 	{
-		/* assert that the attr was produced by the init no-op */
-		if (!attr || *attr != nullptr)
+		if (!attr)
 			return EINVAL;
 
-		warning(__func__, " not implemented yet");
+		(*attr)->clock_id = clock_id;
 
 		return 0;
 	}
@@ -879,15 +1002,16 @@ extern "C" {
 	static int cond_init(pthread_cond_t *__restrict cond,
 	                     const pthread_condattr_t *__restrict attr)
 	{
-		static Lock cond_init_lock { };
+		static Mutex cond_init_mutex { };
 
 		if (!cond)
 			return EINVAL;
 
 		try {
-			Lock::Guard g(cond_init_lock);
+			Mutex::Guard guard(cond_init_mutex);
 			Libc::Allocator alloc { };
-			*cond = new (alloc) pthread_cond;
+			*cond = attr && *attr ? new (alloc) pthread_cond((*attr)->clock_id)
+			                      : new (alloc) pthread_cond(CLOCK_REALTIME);
 			return 0;
 		} catch (...) { return ENOMEM; }
 	}
@@ -899,11 +1023,17 @@ extern "C" {
 		return cond_init(cond, attr);
 	}
 
+	typeof(pthread_cond_init) _pthread_cond_init
+		__attribute__((alias("pthread_cond_init")));
+
 
 	int pthread_cond_destroy(pthread_cond_t *cond)
 	{
-		if (!cond || !*cond)
+		if (!cond)
 			return EINVAL;
+
+		if (*cond == PTHREAD_COND_INITIALIZER)
+			return 0;
 
 		Libc::Allocator alloc { };
 		destroy(alloc, *cond);
@@ -911,6 +1041,9 @@ extern "C" {
 
 		return 0;
 	}
+
+	typeof(pthread_cond_destroy) _pthread_cond_destroy
+		__attribute__((alias("pthread_cond_destroy")));
 
 
 	int pthread_cond_timedwait(pthread_cond_t *__restrict cond,
@@ -943,8 +1076,18 @@ extern "C" {
 
 		pthread_mutex_lock(&c->counter_mutex);
 		if (c->num_signallers > 0) {
-			if (result == ETIMEDOUT) /* timeout occured */
-				sem_wait(&c->signal_sem);
+			if (result == ETIMEDOUT) {
+				/*
+				 * Another thread may have called pthread_cond_signal(),
+				 * detected this waiter and posted 'signal_sem' concurrently.
+				 *
+				 * We can't consume this post by 'sem_wait(&c->signal_sem)'
+				 * because a third thread may have consumed the post already
+				 * above in sem_wait/timedwait(). So, we just do nothing here
+				 * and accept the spurious wakeup on next
+				 * pthread_cond_wait/timedwait().
+				 */
+			}
 			sem_post(&c->handshake_sem);
 			--c->num_signallers;
 		}
@@ -956,6 +1099,9 @@ extern "C" {
 		return result;
 	}
 
+	typeof(pthread_cond_timedwait) _pthread_cond_timedwait
+		__attribute__((alias("pthread_cond_timedwait")));
+
 
 	int pthread_cond_wait(pthread_cond_t *__restrict cond,
 	                      pthread_mutex_t *__restrict mutex)
@@ -963,11 +1109,17 @@ extern "C" {
 		return pthread_cond_timedwait(cond, mutex, nullptr);
 	}
 
+	typeof(pthread_cond_wait) _pthread_cond_wait
+		__attribute__((alias("pthread_cond_wait")));
+
 
 	int pthread_cond_signal(pthread_cond_t *cond)
 	{
-		if (!cond || !*cond)
+		if (!cond)
 			return EINVAL;
+
+		if (*cond == PTHREAD_COND_INITIALIZER)
+			cond_init(cond, NULL);
 
 		pthread_cond *c = *cond;
 
@@ -983,11 +1135,17 @@ extern "C" {
 		return 0;
 	}
 
+	typeof(pthread_cond_signal) _pthread_cond_signal
+		__attribute__((alias("pthread_cond_signal")));
+
 
 	int pthread_cond_broadcast(pthread_cond_t *cond)
 	{
-		if (!cond || !*cond)
+		if (!cond)
 			return EINVAL;
+
+		if (*cond == PTHREAD_COND_INITIALIZER)
+			cond_init(cond, NULL);
 
 		pthread_cond *c = *cond;
 
@@ -1006,6 +1164,10 @@ extern "C" {
 		return 0;
 	}
 
+	typeof(pthread_cond_broadcast) _pthread_cond_broadcast
+		__attribute__((alias("pthread_cond_broadcast")));
+
+
 	/* TLS */
 
 
@@ -1020,9 +1182,9 @@ extern "C" {
 	};
 
 
-	static Lock &key_list_lock()
+	static Mutex &key_list_mutex()
 	{
-		static Lock inst { };
+		static Mutex inst { };
 		return inst;
 	}
 
@@ -1045,7 +1207,7 @@ extern "C" {
 		if (!key)
 			return EINVAL;
 
-		Lock_guard<Lock> key_list_lock_guard(key_list_lock());
+		Mutex::Guard guard(key_list_mutex());
 
 		for (int k = 0; k < PTHREAD_KEYS_MAX; k++) {
 			/*
@@ -1064,13 +1226,16 @@ extern "C" {
 		return EAGAIN;
 	}
 
+	typeof(pthread_key_create) _pthread_key_create
+		__attribute__((alias("pthread_key_create")));
+
 
 	int pthread_key_delete(pthread_key_t key)
 	{
 		if (key < 0 || key >= PTHREAD_KEYS_MAX || !keys().key[key].first())
 			return EINVAL;
 
-		Lock_guard<Lock> key_list_lock_guard(key_list_lock());
+		Mutex::Guard guard(key_list_mutex());
 
 		while (Key_element * element = keys().key[key].first()) {
 			keys().key[key].remove(element);
@@ -1081,6 +1246,9 @@ extern "C" {
 		return 0;
 	}
 
+	typeof(pthread_key_delete) _pthread_key_delete
+		__attribute__((alias("pthread_key_delete")));
+
 
 	int pthread_setspecific(pthread_key_t key, const void *value)
 	{
@@ -1089,7 +1257,7 @@ extern "C" {
 
 		void *myself = Thread::myself();
 
-		Lock_guard<Lock> key_list_lock_guard(key_list_lock());
+		Mutex::Guard guard(key_list_mutex());
 
 		for (Key_element *key_element = keys().key[key].first(); key_element;
 		     key_element = key_element->next())
@@ -1105,6 +1273,9 @@ extern "C" {
 		return 0;
 	}
 
+	typeof(pthread_setspecific) _pthread_setspecific
+		__attribute__((alias("pthread_setspecific")));
+
 
 	void *pthread_getspecific(pthread_key_t key)
 	{
@@ -1113,7 +1284,7 @@ extern "C" {
 
 		void *myself = Thread::myself();
 
-		Lock_guard<Lock> key_list_lock_guard(key_list_lock());
+		Mutex::Guard guard(key_list_mutex());
 
 		for (Key_element *key_element = keys().key[key].first(); key_element;
 		     key_element = key_element->next())
@@ -1122,6 +1293,9 @@ extern "C" {
 
 		return 0;
 	}
+
+	typeof(pthread_getspecific) _pthread_getspecific
+		__attribute__((alias("pthread_getspecific")));
 
 
 	int pthread_once(pthread_once_t *once, void (*init_once)(void))
@@ -1136,8 +1310,8 @@ extern "C" {
 			if (!p) return EINVAL;
 
 			{
-				static Lock lock;
-				Lock::Guard guard(lock);
+				static Mutex mutex;
+				Mutex::Guard guard(mutex);
 
 				if (!once->mutex) {
 					once->mutex = p;
@@ -1167,4 +1341,7 @@ extern "C" {
 
 		return 0;
 	}
+
+	typeof(pthread_once) _pthread_once
+		__attribute__((alias("pthread_once")));
 }

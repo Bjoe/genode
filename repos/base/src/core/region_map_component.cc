@@ -15,7 +15,6 @@
 
 /* Genode includes */
 #include <base/log.h>
-#include <base/lock.h>
 #include <util/arg_string.h>
 #include <util/misc_math.h>
 
@@ -25,7 +24,6 @@
 #include <region_map_component.h>
 #include <dataspace_component.h>
 
-static const bool verbose             = false;
 static const bool verbose_page_faults = false;
 
 
@@ -270,7 +268,7 @@ int Rm_client::pager(Ipc_pager &pager)
 void Rm_faulter::fault(Region_map_component &faulting_region_map,
                        Region_map::State     fault_state)
 {
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard lock_guard(_mutex);
 
 	_faulting_region_map = faulting_region_map.weak_ptr();
 	_fault_state         = fault_state;
@@ -282,7 +280,7 @@ void Rm_faulter::fault(Region_map_component &faulting_region_map,
 void Rm_faulter::dissolve_from_faulting_region_map(Region_map_component &caller)
 {
 	/* serialize access */
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard lock_guard(_mutex);
 
 	enum { DO_LOCK = true };
 	if (caller.equals(_faulting_region_map)) {
@@ -300,7 +298,7 @@ void Rm_faulter::dissolve_from_faulting_region_map(Region_map_component &caller)
 
 void Rm_faulter::continue_after_resolved_fault()
 {
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard lock_guard(_mutex);
 
 	_pager_object.wake_up();
 	_faulting_region_map = Genode::Weak_ptr<Genode::Region_map_component>();
@@ -355,7 +353,7 @@ Region_map_component::attach(Dataspace_capability ds_cap, size_t size,
                              bool executable, bool writeable)
 {
 	/* serialize access */
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard lock_guard(_mutex);
 
 	/* offset must be positive and page-aligned */
 	if (offset < 0 || align_addr(offset, get_page_size_log2()) != offset)
@@ -520,7 +518,7 @@ void Region_map_component::unmap_region(addr_t base, size_t size)
 void Region_map_component::detach(Local_addr local_addr)
 {
 	/* serialize access */
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard lock_guard(_mutex);
 
 	/* read meta data for address */
 	Rm_region *region_ptr = _map.metadata(local_addr);
@@ -579,7 +577,7 @@ void Region_map_component::detach(Local_addr local_addr)
 
 void Region_map_component::add_client(Rm_client &rm_client)
 {
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard lock_guard(_mutex);
 
 	_clients.insert(&rm_client);
 }
@@ -587,7 +585,7 @@ void Region_map_component::add_client(Rm_client &rm_client)
 
 void Region_map_component::remove_client(Rm_client &rm_client)
 {
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard lock_guard(_mutex);
 
 	_clients.remove(&rm_client);
 	rm_client.dissolve_from_faulting_region_map(*this);
@@ -611,7 +609,7 @@ void Region_map_component::fault(Rm_faulter &faulter, addr_t pf_addr,
 void Region_map_component::discard_faulter(Rm_faulter &faulter, bool do_lock)
 {
 	if (do_lock) {
-		Lock::Guard lock_guard(_lock);
+		Mutex::Guard lock_guard(_mutex);
 		_faulters.remove(faulter);
 	} else
 		_faulters.remove(faulter);
@@ -627,7 +625,7 @@ void Region_map_component::fault_handler(Signal_context_capability handler)
 Region_map::State Region_map_component::state()
 {
 	/* serialize access */
-	Lock::Guard lock_guard(_lock);
+	Mutex::Guard lock_guard(_mutex);
 
 	/* return ready state if there are not current faulters */
 	Region_map::State result;
@@ -683,7 +681,7 @@ Region_map_component::~Region_map_component()
 		Cpu_session_capability cpu_session_cap;
 		Thread_capability      thread_cap;
 		{
-			Lock::Guard lock_guard(_lock);
+			Mutex::Guard lock_guard(_mutex);
 			cl = _clients.first();
 			if (!cl) break;
 
@@ -708,7 +706,7 @@ Region_map_component::~Region_map_component()
 		addr_t out_addr = 0;
 
 		{
-			Lock::Guard lock_guard(_lock);
+			Mutex::Guard lock_guard(_mutex);
 			if (!_map.any_block_addr(&out_addr))
 				break;
 		}

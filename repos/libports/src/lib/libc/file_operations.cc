@@ -43,6 +43,8 @@ extern "C" {
 #include <internal/mem_alloc.h>
 #include <internal/mmap_registry.h>
 #include <internal/errno.h>
+#include <internal/init.h>
+#include <internal/cwd.h>
 
 using namespace Libc;
 
@@ -61,6 +63,23 @@ Libc::Mmap_registry *Libc::mmap_registry()
 }
 
 
+static Cwd          *_cwd_ptr;
+static unsigned int  _mmap_align_log2 { PAGE_SHIFT };
+
+void Libc::init_file_operations(Cwd &cwd,
+                                Config_accessor const &config_accessor)
+{
+	_cwd_ptr = &cwd;
+
+	config_accessor.config().with_sub_node("libc", [&] (Xml_node libc) {
+		libc.with_sub_node("mmap", [&] (Xml_node mmap) {
+			_mmap_align_log2 = mmap.attribute_value("align_log2",
+			                                        (unsigned int)PAGE_SHIFT);
+		});
+	});
+}
+
+
 /***************
  ** Utilities **
  ***************/
@@ -70,8 +89,11 @@ Libc::Mmap_registry *Libc::mmap_registry()
  */
 static Absolute_path &cwd()
 {
-	static Absolute_path _cwd("/");
-	return _cwd;
+	struct Missing_call_of_init_file_operations : Exception { };
+	if (!_cwd_ptr)
+		throw Missing_call_of_init_file_operations();
+
+	return _cwd_ptr->cwd();
 }
 
 /**
@@ -273,6 +295,7 @@ extern "C" int dup2(int libc_fd, int new_libc_fd)
 		close(new_libc_fd);
 
 	new_fd = file_descriptor_allocator()->alloc(fd->plugin, 0, new_libc_fd);
+	if (!new_fd) return Errno(EMFILE);
 
 	/* new_fd->context must be assigned by the plugin implementing 'dup2' */
 	return fd->plugin->dup2(fd, new_fd);
@@ -361,7 +384,7 @@ __SYS_(ssize_t, getdirentries, (int libc_fd, char *buf, ::size_t nbytes, ::off_t
 	FD_FUNC_WRAPPER(getdirentries, libc_fd, buf, nbytes, basep); })
 
 
-__SYS_(int, ioctl, (int libc_fd, int request, char *argp), {
+__SYS_(int, ioctl, (int libc_fd, unsigned long request, char *argp), {
 	FD_FUNC_WRAPPER(ioctl, libc_fd, request, argp); })
 
 
@@ -374,6 +397,7 @@ extern "C" int lstat(const char *path, struct stat *buf)
 	try {
 		Absolute_path resolved_path;
 		resolve_symlinks_except_last_element(path, resolved_path);
+		resolved_path.remove_trailing('/');
 		FNAME_FUNC_WRAPPER(stat, resolved_path.base(), buf);
 	} catch (Symlink_resolve_error) {
 		return -1;
@@ -386,6 +410,7 @@ extern "C" int mkdir(const char *path, mode_t mode)
 	try {
 		Absolute_path resolved_path;
 		resolve_symlinks_except_last_element(path, resolved_path);
+		resolved_path.remove_trailing('/');
 		FNAME_FUNC_WRAPPER(mkdir, resolved_path.base(), mode);
 	} catch(Symlink_resolve_error) {
 		return -1;
@@ -397,15 +422,22 @@ __SYS_(void *, mmap, (void *addr, ::size_t length,
                       int prot, int flags,
                       int libc_fd, ::off_t offset),
 {
-
 	/* handle requests for anonymous memory */
-	if (!addr && libc_fd == -1) {
+	if ((flags & MAP_ANONYMOUS) || (flags & MAP_ANON)) {
+
+		if (flags & MAP_FIXED) {
+			Genode::error("mmap for fixed predefined address not supported yet");
+			errno = EINVAL;
+			return MAP_FAILED;
+		}
+
 		bool const executable = prot & PROT_EXEC;
-		void *start = mem_alloc(executable)->alloc(length, PAGE_SHIFT);
+		void *start = mem_alloc(executable)->alloc(length, _mmap_align_log2);
 		if (!start) {
 			errno = ENOMEM;
 			return MAP_FAILED;
 		}
+		::memset(start, 0, align_addr(length, PAGE_SHIFT));
 		mmap_registry()->insert(start, length, 0);
 		return start;
 	}
@@ -419,7 +451,10 @@ __SYS_(void *, mmap, (void *addr, ::size_t length,
 	}
 
 	void *start = fd->plugin->mmap(addr, length, prot, flags, fd, offset);
-	mmap_registry()->insert(start, length, fd->plugin);
+
+	if (start != MAP_FAILED)
+		mmap_registry()->insert(start, length, fd->plugin);
+
 	return start;
 })
 
@@ -439,6 +474,12 @@ extern "C" int munmap(void *start, ::size_t length)
 	 */
 	Plugin *plugin = mmap_registry()->lookup_plugin_by_addr(start);
 
+	/*
+	 * Remove registry entry before unmapping to avoid double insertion error
+	 * if another thread gets the same start address immediately after unmapping.
+	 */
+	mmap_registry()->remove(start);
+
 	int ret = 0;
 	if (plugin)
 		ret = plugin->munmap(start, length);
@@ -449,7 +490,6 @@ extern "C" int munmap(void *start, ::size_t length)
 		mem_alloc(executable)->free(start);
 	}
 
-	mmap_registry()->remove(start);
 	return ret;
 }
 
@@ -511,11 +551,12 @@ __SYS_(int, open, (const char *pathname, int flags, ...),
 	}
 
 	new_fdo = plugin->open(resolved_path.base(), flags);
-	if (!new_fdo) {
-		error("plugin()->open(\"", pathname, "\") failed");
+	if (!new_fdo)
 		return -1;
-	}
 	new_fdo->path(resolved_path.base());
+
+	if (flags & O_APPEND)
+		lseek(new_fdo->libc_fd, 0, SEEK_END);
 
 	return new_fdo->libc_fd;
 })
@@ -608,6 +649,10 @@ extern "C" int rename(const char *oldpath, const char *newpath)
 		Absolute_path resolved_oldpath, resolved_newpath;
 		resolve_symlinks_except_last_element(oldpath, resolved_oldpath);
 		resolve_symlinks_except_last_element(newpath, resolved_newpath);
+
+		resolved_oldpath.remove_trailing('/');
+		resolved_newpath.remove_trailing('/');
+
 		FNAME_FUNC_WRAPPER(rename, resolved_oldpath.base(), resolved_newpath.base());
 	} catch(Symlink_resolve_error) {
 		return -1;
@@ -617,19 +662,21 @@ extern "C" int rename(const char *oldpath, const char *newpath)
 
 extern "C" int rmdir(const char *path)
 {
-	struct stat stat_buf;
-
-	if (stat(path, &stat_buf) == -1)
-		return -1;
-	
-	if (!S_ISDIR(stat_buf.st_mode)) {
-		errno = ENOTDIR;
-		return -1;
-	}
-
 	try {
 		Absolute_path resolved_path;
 		resolve_symlinks_except_last_element(path, resolved_path);
+		resolved_path.remove_trailing('/');
+
+		struct stat stat_buf { };
+
+		if (stat(resolved_path.base(), &stat_buf) == -1)
+			return -1;
+
+		if (!S_ISDIR(stat_buf.st_mode)) {
+			errno = ENOTDIR;
+			return -1;
+		}
+
 		FNAME_FUNC_WRAPPER(rmdir, resolved_path.base());
 	} catch(Symlink_resolve_error) {
 		return -1;
@@ -642,6 +689,7 @@ extern "C" int stat(const char *path, struct stat *buf)
 	try {
 		Absolute_path resolved_path;
 		resolve_symlinks(path, resolved_path);
+		resolved_path.remove_trailing('/');
 		FNAME_FUNC_WRAPPER(stat, resolved_path.base(), buf);
 	} catch(Symlink_resolve_error) {
 		return -1;
@@ -686,6 +734,6 @@ __SYS_(ssize_t, write, (int libc_fd, const void *buf, ::size_t count),
 
 extern "C" int __getcwd(char *dst, ::size_t dst_size)
 {
-	Genode::strncpy(dst, cwd().base(), dst_size);
+	copy_cstring(dst, cwd().base(), dst_size);
 	return 0;
 }

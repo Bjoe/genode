@@ -1,3 +1,6 @@
-include $(PRG_DIR)/../target.inc
+QMAKE_PROJECT_FILE    = $(PRG_DIR)/panel.pro
+QMAKE_TARGET_BINARIES = test-tiled_wm-panel
 
-panel.o main.o: icon.h
+qmake_prepared.tag: icon.h
+
+include $(PRG_DIR)/../target.inc

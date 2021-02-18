@@ -3,7 +3,7 @@
 	<requires>
 		<file_system label="vm"/>
 		<file_system label="shared"/>
-		<nitpicker/>
+		<gui/>
 		<nic/>
 		<rom label="capslock"/>
 		<rom label="platform_info"/>
@@ -23,7 +23,6 @@
 		<rom label="timer"/>
 		<rom label="virtualbox5-nova"/>
 		<rom label="libc.lib.so"/>
-		<rom label="libc_pipe.lib.so"/>
 		<rom label="libm.lib.so"/>
 		<rom label="libiconv.lib.so"/>
 		<rom label="qemu-usb.lib.so"/>

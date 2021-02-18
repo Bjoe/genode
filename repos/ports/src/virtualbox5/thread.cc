@@ -14,6 +14,7 @@
 /* Genode */
 #include <base/attached_rom_dataspace.h>
 #include <base/log.h>
+#include <base/sleep.h>
 #include <base/thread.h>
 #include <cpu_session/connection.h>
 
@@ -60,11 +61,11 @@ static Genode::Cpu_connection * cpu_connection(RTTHREADTYPE type)
 	using namespace Genode;
 
 	static Cpu_connection * con[RTTHREADTYPE_END - 1];
-	static Lock lock;
+	static Mutex mutex { };
 
 	Assert(type && type < RTTHREADTYPE_END);
 
-	Lock::Guard guard(lock);
+	Mutex::Guard guard(mutex);
 
 	if (con[type - 1])
 		return con[type - 1];
@@ -104,12 +105,12 @@ static int create_thread(pthread_t *thread, const pthread_attr_t *attr,
 		unsigned int cpu_id = 0;
 		sscanf(rtthread->szName, "EMT-%u", &cpu_id);
 
-		Genode::Cpu_session * cpu_session = cpu_connection(RTTHREADTYPE_EMULATION);
-		Genode::Affinity::Space space = cpu_session->affinity_space();
+		Genode::Cpu_connection * cpu = cpu_connection(RTTHREADTYPE_EMULATION);
+		Genode::Affinity::Space space = cpu->affinity_space();
 		Genode::Affinity::Location location(space.location_of_index(cpu_id));
 
 		if (create_emt_vcpu(thread, stack_size, start_routine, arg,
-		                    cpu_session, location, cpu_id, rtthread->szName,
+		                    cpu, location, cpu_id, rtthread->szName,
 		                    prio_class(rtthread->enmType)))
 			return 0;
 		/*
@@ -124,10 +125,24 @@ static int create_thread(pthread_t *thread, const pthread_attr_t *attr,
 	 * and 'rtTimerLRThread' (timerlr-generic.cpp)
 	 */
 	bool const rtthread_timer = rtthread->enmType == RTTHREADTYPE_TIMER;
-	return Libc::pthread_create(thread, start_routine, arg,
-	                            stack_size, rtthread->szName,
-	                            rtthread_timer ? nullptr : cpu_connection(rtthread->enmType),
-	                            Genode::Affinity::Location());
+
+	if (rtthread_timer) {
+		return Libc::pthread_create(thread, start_routine, arg,
+		                            stack_size, rtthread->szName, nullptr,
+		                            Genode::Affinity::Location());
+
+	} else {
+		using namespace Genode;
+		Cpu_connection *cpu = cpu_connection(rtthread->enmType);
+		return cpu->retry_with_upgrade(Ram_quota{8*1024}, Cap_quota{2},
+		                               [&] ()
+		{
+			return Libc::pthread_create(thread, start_routine, arg,
+			                            stack_size, rtthread->szName, cpu,
+			                            Genode::Affinity::Location());
+		});
+	}
+
 }
 
 extern "C" int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
@@ -139,13 +154,12 @@ extern "C" int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 	for (unsigned i = 0; i < 2; i++) {
 		using namespace Genode;
 
-		try { return create_thread(thread, attr, start_routine, arg); }
+		try {
+			return create_thread(thread, attr, start_routine, arg); }
 		catch (Out_of_ram) {
 			log("Upgrading memory for creation of "
 			    "thread '", Cstring(rtthread->szName), "'");
 			cpu_connection(rtthread->enmType)->upgrade_ram(4096);
-		} catch (Genode::Signal_receiver::Signal_not_pending) {
-			error("signal not pending ?");
 		} catch (Out_of_caps) {
 			error("out of caps ...");
 		}
@@ -153,8 +167,7 @@ extern "C" int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 	}
 
 	Genode::error("could not create vbox pthread - halt");
-	Genode::Lock lock(Genode::Lock::LOCKED);
-	lock.lock();
+	Genode::sleep_forever();
 	return EAGAIN;
 }
 

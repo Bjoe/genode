@@ -51,15 +51,15 @@ namespace {
 
 			enum { MAX = 32 };
 
-			Lock mutable _lock { };
-			Service      _services[MAX] { };
-			unsigned     _cnt = 0;
+			Mutex mutable _mutex { };
+			Service       _services[MAX] { };
+			unsigned      _cnt = 0;
 
 		public:
 
 			void insert(Service const &service)
 			{
-				Lock::Guard guard(_lock);
+				Mutex::Guard guard(_mutex);
 
 				if (_cnt == MAX) {
 					error("maximum number of services announced");
@@ -76,13 +76,13 @@ namespace {
 			void apply(Service::Name const &name, FUNC const &fn)
 			{
 				/*
-				 * Protect '_services' but execute 'fn' with the lock released.
+				 * Protect '_services' but execute 'fn' with the mutex released.
 				 *
-				 * If we called 'fn' with the lock held, the following scenario
-				 * may result in a deadlock:
+				 * If we called 'fn' with the mutex held, the following
+				 * scenario may result in a deadlock:
 				 *
 				 * A component provides two services, e.g., "Framebuffer" and
-				 * "Input" (fb_sdl or nit_fb). In-between the two 'announce'
+				 * "Input" (fb_sdl or gui_fb). In-between the two 'announce'
 				 * calls (within the 'Component::construct' function), a
 				 * service request for the already announced service comes in.
 				 * The root proxy calls 'apply' with the service name, which
@@ -91,19 +91,19 @@ namespace {
 				 * call blocks until 'Component::construct' returns. However,
 				 * before returning, the function announces the second service,
 				 * eventually arriving at 'Service_registry::insert', which
-				 * tries to acquire the same lock as the blocking 'apply' call.
+				 * tries to acquire the same mutex as the blocking 'apply' call.
 				 */
-				_lock.lock();
+				_mutex.acquire();
 
 				for (unsigned i = 0; i < _cnt; i++) {
 					if (name != _services[i].name)
 						continue;
 
-					_lock.unlock();
+					_mutex.release();
 					fn(_services[i]);
 					return;
 				}
-				_lock.unlock();
+				_mutex.release();
 			}
 	};
 
@@ -170,14 +170,16 @@ void Root_proxy::_handle_session_request(Xml_node request, char const *type)
 		typedef Session_state::Args Args;
 		Args const args = request.sub_node("args").decoded_content<Args>();
 
+		/* construct session */
 		try {
 			Service::Name const name = request.attribute_value("service", Service::Name());
 
 			_services.apply(name, [&] (Service &service) {
 
-				// XXX affinity
 				Session_capability cap =
-					Root_client(service.root).session(args.string(), Affinity());
+					Root_client(service.root).session(args.string(),
+					                                  Affinity::from_xml(request));
+
 
 				new (_session_slab) Session(_id_space, id, service, cap);
 				_env.parent().deliver_session_cap(id, cap);

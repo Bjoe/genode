@@ -346,12 +346,6 @@ bool Thread::_restart()
 }
 
 
-void Thread::_call_cancel_thread_blocking()
-{
-	reinterpret_cast<Thread*>(user_arg_1())->_cancel_blocking();
-}
-
-
 void Thread::_cancel_blocking()
 {
 	switch (_state) {
@@ -727,8 +721,7 @@ void Thread::_call()
 	/* switch over unrestricted kernel calls */
 	unsigned const call_id = user_arg_0();
 	switch (call_id) {
-	case call_id_update_data_region():       _call_update_data_region(); return;
-	case call_id_update_instr_region():      _call_update_instr_region(); return;
+	case call_id_cache_coherent_region():    _call_cache_coherent_region(); return;
 	case call_id_stop_thread():              _call_stop_thread(); return;
 	case call_id_restart_thread():           _call_restart_thread(); return;
 	case call_id_yield_thread():             _call_yield_thread(); return;
@@ -747,6 +740,8 @@ void Thread::_call()
 	case call_id_timeout():                  _call_timeout(); return;
 	case call_id_timeout_max_us():           _call_timeout_max_us(); return;
 	case call_id_time():                     _call_time(); return;
+	case call_id_run_vm():                   _call_run_vm(); return;
+	case call_id_pause_vm():                 _call_pause_vm(); return;
 	default:
 		/* check wether this is a core thread */
 		if (!_core) {
@@ -769,7 +764,6 @@ void Thread::_call()
 	case call_id_delete_thread():          _call_delete_thread(); return;
 	case call_id_start_thread():           _call_start_thread(); return;
 	case call_id_resume_thread():          _call_resume_thread(); return;
-	case call_id_cancel_thread_blocking(): _call_cancel_thread_blocking(); return;
 	case call_id_thread_pager():           _call_pager(); return;
 	case call_id_invalidate_tlb():         _call_invalidate_tlb(); return;
 	case call_id_new_pd():
@@ -785,8 +779,6 @@ void Thread::_call()
 	case call_id_delete_signal_receiver(): _call_delete<Signal_receiver>(); return;
 	case call_id_new_vm():                 _call_new_vm(); return;
 	case call_id_delete_vm():              _call_delete_vm(); return;
-	case call_id_run_vm():                 _call_run_vm(); return;
-	case call_id_pause_vm():               _call_pause_vm(); return;
 	case call_id_pause_thread():           _call_pause_thread(); return;
 	case call_id_new_irq():                _call_new_irq(); return;
 	case call_id_delete_irq():             _call_delete<User_irq>(); return;

@@ -53,6 +53,9 @@
 #include <util/interface.h>
 #include <util/xml_node.h>
 
+/* NIC driver includes */
+#include <drivers/nic/mode.h>
+
 /* rep includes */
 #include <wifi/ctrl.h>
 #include <wifi/rfkill.h>
@@ -330,10 +333,10 @@ struct Wifi::Frontend
 
 	Msg_buffer _msg;
 
-	Genode::Lock _notify_lock { Genode::Lock::UNLOCKED };
+	Genode::Blockade _notify_blockade { };
 
-	void _notify_lock_lock()   { _notify_lock.lock(); }
-	void _notify_lock_unlock() { _notify_lock.unlock(); }
+	void _notify_lock_lock()   { _notify_blockade.block(); }
+	void _notify_lock_unlock() { _notify_blockade.wakeup(); }
 
 	bool _rfkilled { false };
 
@@ -360,6 +363,8 @@ struct Wifi::Frontend
 
 	Genode::Attached_rom_dataspace         _config_rom;
 	Genode::Signal_handler<Wifi::Frontend> _config_sigh;
+
+	Genode::Nic_driver_mode const _mode;
 
 	bool _verbose       { false };
 	bool _verbose_state { false };
@@ -1560,6 +1565,9 @@ struct Wifi::Frontend
 		_rfkill_handler(env.ep(), *this, &Wifi::Frontend::_handle_rfkill),
 		_config_rom(env, "wifi_config"),
 		_config_sigh(env.ep(), *this, &Wifi::Frontend::_handle_config_update),
+		_mode(
+			read_nic_driver_mode(
+				Genode::Attached_rom_dataspace(env, "config").xml())),
 		_scan_timer(env),
 		_scan_timer_sigh(env.ep(), *this, &Wifi::Frontend::_handle_scan_timer),
 		_events_handler(env.ep(), *this, &Wifi::Frontend::_handle_events),
@@ -1567,6 +1575,9 @@ struct Wifi::Frontend
 	{
 		_config_rom.sigh(_config_sigh);
 		_scan_timer.sigh(_scan_timer_sigh);
+
+		/* set/initialize as unblocked */
+		_notify_blockade.wakeup();
 
 		try {
 			_ap_reporter.construct(env, "accesspoints", "accesspoints");
@@ -1648,6 +1659,8 @@ struct Wifi::Frontend
 	 * Used for communication between front end and wpa_supplicant.
 	 */
 	Msg_buffer &msg_buffer() { return _msg; }
+
+	Genode::Nic_driver_mode mode() const { return _mode; }
 };
 
 #endif /* _WIFI_FRONTEND_H_ */

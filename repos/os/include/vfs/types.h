@@ -18,7 +18,7 @@
 #include <util/misc_math.h>
 #include <util/xml_node.h>
 #include <util/string.h>
-#include <base/lock.h>
+#include <base/mutex.h>
 #include <base/env.h>
 #include <base/signal.h>
 #include <base/allocator.h>
@@ -34,14 +34,14 @@ namespace Vfs {
 	using Genode::Dataspace_client;
 	using Genode::min;
 	using Genode::ascii_to;
-	using Genode::strncpy;
+	using Genode::copy_cstring;
 	using Genode::strcmp;
 	using Genode::strlen;
 	typedef long long file_offset;
 	using Genode::memcpy;
 	using Genode::memset;
 	typedef unsigned long long file_size;
-	using Genode::Lock;
+	using Genode::Mutex;
 	using Genode::List;
 	using Genode::Xml_node;
 	using Genode::Signal_context_capability;

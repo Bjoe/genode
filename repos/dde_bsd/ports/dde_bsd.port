@@ -7,7 +7,7 @@ DOWNLOADS := audio.archive
 #
 SRC_DIR_AUDIO  := src/lib/audio
 VERSION_AUDIO  := 6.6
-BASE_URL       := https://ftp.halifax.rwth-aachen.de/pub/OpenBSD
+BASE_URL       := https://ftp.fau.de/pub/OpenBSD
 URL(audio)     := $(BASE_URL)/$(VERSION_AUDIO)/sys.tar.gz
 SHA(audio)     := a1b19665989c02a2017a639d47a042f4fe7f584b6298727e982a5536020b832d
 DIR(audio)     := $(SRC_DIR_AUDIO)
@@ -22,6 +22,8 @@ PATCHES := $(addprefix patches/,$(notdir $(wildcard $(REP_DIR)/patches/*.patch))
 AUDIO_OPT := -p1 -d$(SRC_DIR_AUDIO)
 PATCH_OPT(patches/oppress_warning.patch) := $(AUDIO_OPT)
 PATCH_OPT(patches/azalia_c.patch)        := $(AUDIO_OPT)
+PATCH_OPT(patches/azalia_h.patch)        := $(AUDIO_OPT)
+PATCH_OPT(patches/azalia_codec_c.patch)  := $(AUDIO_OPT)
 PATCH_OPT(patches/notify.patch)          := $(AUDIO_OPT)
 
 # vi: set ft=make :

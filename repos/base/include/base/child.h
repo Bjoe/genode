@@ -17,7 +17,7 @@
 #include <base/rpc_server.h>
 #include <base/heap.h>
 #include <base/service.h>
-#include <base/lock.h>
+#include <base/mutex.h>
 #include <base/local_connection.h>
 #include <base/quota_guard.h>
 #include <util/arg_string.h>
@@ -83,7 +83,8 @@ struct Genode::Child_policy
 	 * \throw Service_denied
 	 */
 	virtual Route resolve_session_request(Service::Name const &,
-	                                      Session_label const &) = 0;
+	                                      Session_label const &,
+	                                      Session::Diag) = 0;
 
 	/**
 	 * Apply transformations to session arguments
@@ -296,8 +297,8 @@ class Genode::Child : protected Rpc_object<Parent>,
 		Signal_context_capability _heartbeat_sigh      { };
 
 		/* arguments fetched by the child in response to a yield signal */
-		Lock          _yield_request_lock { };
-		Resource_args _yield_request_args { };
+		Mutex         _yield_request_mutex { };
+		Resource_args _yield_request_args  { };
 
 		/* number of unanswered heartbeat signals */
 		unsigned _outstanding_heartbeats = 0;
@@ -575,7 +576,8 @@ class Genode::Child : protected Rpc_object<Parent>,
 				try {
 					Child_policy::Route const route =
 						_child._policy.resolve_session_request(_service_name(),
-						                                       label_from_args(_args.string()));
+						                                       label_from_args(_args.string()),
+						                                       session_diag_from_args(_args.string()));
 					_env_service.construct(_child, route.service);
 					_connection.construct(*_env_service, _child._id_space, _client_id,
 					                      _args, _child._policy.filter_session_affinity(Affinity()),

@@ -14,6 +14,7 @@
 #ifndef _SRC__LIB__HW__SPEC__X86_64__PAGE_TABLE_H_
 #define _SRC__LIB__HW__SPEC__X86_64__PAGE_TABLE_H_
 
+#include <base/log.h>
 #include <hw/assert.h>
 #include <hw/page_flags.h>
 #include <hw/page_table_allocator.h>
@@ -67,8 +68,8 @@ namespace Hw
 		struct P   : Bitfield<0, 1> { };   /* present         */
 		struct Rw  : Bitfield<1, 1> { };   /* read/write      */
 		struct Us  : Bitfield<2, 1> { };   /* user/supervisor */
-		struct Pwt : Bitfield<3, 1> { };   /* write-through   */
-		struct Pcd : Bitfield<4, 1> { };   /* cache disable   */
+		struct Pwt : Bitfield<3, 1> { };   /* write-through or PAT defined */
+		struct Pcd : Bitfield<4, 1> { };   /* cache disable or PAT defined */
 		struct A   : Bitfield<5, 1> { };   /* accessed        */
 		struct D   : Bitfield<6, 1> { };   /* dirty           */
 		struct Xd  : Bitfield<63, 1> { };  /* execute-disable */
@@ -121,10 +122,12 @@ class Hw::Level_4_translation_table
 
 			static access_t create(Page_flags const &flags, addr_t const pa)
 			{
-				/* XXX: Set memory type depending on active PAT */
+				bool const wc = flags.cacheable == Genode::Cache_attribute::WRITE_COMBINED;
+
 				return Common::create(flags)
 					| G::bits(flags.global)
-					| Pa::masked(pa);
+					| Pa::masked(pa)
+					| Pwt::bits(wc ? 1 : 0);
 			}
 		};
 
@@ -299,11 +302,13 @@ class Hw::Page_directory
 			static typename Base::access_t create(Page_flags const &flags,
 			                                      addr_t const pa)
 			{
-				/* XXX: Set memory type depending on active PAT */
+				bool const wc = flags.cacheable == Genode::Cache_attribute::WRITE_COMBINED;
+
 				return Base::create(flags)
 					| Base::Ps::bits(1)
 					| G::bits(flags.global)
-					| Pa::masked(pa);
+					| Pa::masked(pa)
+					| Base::Pwt::bits(wc ? 1 : 0);
 			}
 		};
 
@@ -675,6 +680,12 @@ class Hw::Pml4_table
 		void remove_translation(addr_t vo, size_t size, Allocator & alloc)
 		{
 			_range_op(vo, 0, size, Remove_func(alloc));
+		}
+
+		bool lookup_translation(addr_t const, addr_t &, Allocator &)
+		{
+			Genode::raw(__func__, " not implemented yet");
+			return false;
 		}
 } __attribute__((aligned(1 << ALIGNM_LOG2)));
 

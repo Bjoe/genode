@@ -31,9 +31,9 @@ class Timer::Time_source : public Threaded_time_source
 
 		Genode::Env         &_env;
 
-		Genode::Lock mutable _lock { };
-		uint64_t             _curr_time_us = 0;
-		uint64_t             _next_timeout_us = max_timeout().value;
+		Genode::Mutex mutable _mutex { };
+		uint64_t              _curr_time_us = 0;
+		uint64_t              _next_timeout_us = max_timeout().value;
 
 		void _usleep(uint64_t us);
 
@@ -42,7 +42,7 @@ class Timer::Time_source : public Threaded_time_source
 		 ** Threaded_time_source **
 		 **************************/
 
-		void _wait_for_irq() override;
+		Result_of_wait_for_irq _wait_for_irq() override;
 
 	public:
 
@@ -56,7 +56,7 @@ class Timer::Time_source : public Threaded_time_source
 
 		Duration curr_time() override;
 		Microseconds max_timeout() const override;
-		void schedule_timeout(Microseconds duration, Timeout_handler &handler) override;
+		void set_timeout(Microseconds duration, Genode::Timeout_handler &handler) override;
 };
 
 #endif /* _TIME_SOURCE_H_ */

@@ -42,8 +42,6 @@ Launchpad_window<PT>::Launchpad_window(Genode::Env &env,
 :
 	Launchpad(env, initial_quota),
 	Window(gfx_backend, position, size, max_size, false),
-	_docview(0),
-	_spacer(1, _TH),
 	_info_section("Status", &subsection_font),
 	_launch_section("Launcher", &subsection_font),
 	_kiddy_section("Children", &subsection_font),
@@ -175,4 +173,4 @@ void Launchpad_window<PT>::handle_scroll(int view_pos)
 	ypos_sb(-view_pos, 0);
 }
 
-template class Launchpad_window<Genode::Pixel_rgb565>;
+template class Launchpad_window<Genode::Pixel_rgb888>;

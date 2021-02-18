@@ -5,12 +5,12 @@
 #
 
 # add include paths
-INC_DIR += $(BASE_DIR)/../base-hw/src/core/spec/arm_v7
+REP_INC_DIR += src/core/spec/arm_v7
 
 # add C++ sources
 SRC_CC += spec/arm_v7/perf_counter.cc
 
-SRC_S  += spec/arm/vfpv3-d32.cc
+SRC_S  += spec/arm/vfpv3-d32.s
 
 # include less specific configuration
-include $(BASE_DIR)/../base-hw/lib/mk/spec/arm/core-hw.inc
+include $(call select_from_repositories,lib/mk/spec/arm/core-hw.inc)

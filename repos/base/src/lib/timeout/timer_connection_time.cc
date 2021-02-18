@@ -21,7 +21,7 @@ using namespace Genode::Trace;
 
 void Timer::Connection::_update_real_time()
 {
-	Lock_guard<Lock> lock_guard(_real_time_lock);
+	Mutex::Guard guard(_real_time_mutex);
 
 
 	/*
@@ -38,11 +38,11 @@ void Timer::Connection::_update_real_time()
 	 * reached, we take the results that has the lowest latency.
 	 */
 	for (unsigned remote_time_trials = 0;
-	     remote_time_trials < MAX_REMOTE_TIME_TRIALS; )
-	{
+	     remote_time_trials < MAX_REMOTE_TIME_TRIALS; ) {
+
 		/* read out the two time values close in succession */
-		Timestamp volatile new_ts = _timestamp();
-		uint64_t  volatile new_us = elapsed_us();
+		Timestamp const new_ts = _timestamp();
+		uint64_t  const new_us = elapsed_us();
 
 		/* do not proceed until the time difference is at least 1 us */
 		if (new_us == _us || new_ts == _ts) { continue; }
@@ -99,7 +99,10 @@ void Timer::Connection::_update_real_time()
 
 			/* if possible, lower the shift to meet the limitation */
 			if (!factor_shift) {
-				error("timestamp difference too big");
+
+				error("timestamp difference too big, ts_diff=", ts_diff,
+				      " max_ts_diff=", max_ts_diff);
+
 				throw Factor_update_failed();
 			}
 			factor_shift--;
@@ -111,8 +114,8 @@ void Timer::Connection::_update_real_time()
 		 * raise the shift successively to get as much precision as possible.
 		 */
 		uint64_t ts_diff_shifted = ts_diff << factor_shift;
-		while (ts_diff_shifted < us_diff << MIN_FACTOR_LOG2)
-		{
+		while (ts_diff_shifted < us_diff << MIN_FACTOR_LOG2) {
+
 			factor_shift++;
 			ts_diff_shifted <<= 1;
 			old_factor <<= 1;
@@ -143,10 +146,10 @@ void Timer::Connection::_update_real_time()
 
 Duration Timer::Connection::curr_time()
 {
-	_enable_modern_mode();
+	_switch_to_timeout_framework_mode();
 
-	Reconstructible<Lock_guard<Lock> > lock_guard(_real_time_lock);
-	Duration                           interpolated_time(_real_time);
+	Reconstructible<Mutex::Guard> mutex_guard(_real_time_mutex);
+	Duration                      interpolated_time(_real_time);
 
 	/*
 	 * Interpolate with timestamps only if the factor value
@@ -156,28 +159,31 @@ Duration Timer::Connection::curr_time()
 	 * the value would stand still for quite some time because we
 	 * can't let it jump back to a more realistic level.
 	 */
-	if (_interpolation_quality == MAX_INTERPOLATION_QUALITY)
-	{
-		/* buffer interpolation related members and free the lock */
+	if (_interpolation_quality == MAX_INTERPOLATION_QUALITY) {
+
+		/* buffer interpolation related members and free the mutex */
 		Timestamp const ts                    = _ts;
 		uint64_t  const us_to_ts_factor       = _us_to_ts_factor;
 		unsigned  const us_to_ts_factor_shift = _us_to_ts_factor_shift;
 
-		lock_guard.destruct();
+		mutex_guard.destruct();
 
 		/* interpolate time difference since the last real time update */
-		Timestamp  const ts_diff = _timestamp() - ts;
-		uint64_t   const us_diff = _ts_to_us_ratio(ts_diff, us_to_ts_factor,
-		                                              us_to_ts_factor_shift);
+		Timestamp const ts_current_cpu = _timestamp();
+		Timestamp const ts_diff = (ts_current_cpu < ts) ? 0 : ts_current_cpu - ts;
+		uint64_t  const us_diff = _ts_to_us_ratio(ts_diff, us_to_ts_factor,
+		                                          us_to_ts_factor_shift);
 
 		interpolated_time.add(Microseconds(us_diff));
 
 	} else {
+		Timestamp const us = elapsed_us();
+		Timestamp const us_diff = (us < _us) ? 0 : us - _us;
 
 		/* use remote timer instead of timestamps */
-		interpolated_time.add(Microseconds(elapsed_us() - _us));
+		interpolated_time.add(Microseconds(us_diff));
 
-		lock_guard.destruct();
+		mutex_guard.destruct();
 	}
 	return _update_interpolated_time(interpolated_time);
 }

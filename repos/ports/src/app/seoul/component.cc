@@ -178,7 +178,7 @@ class Vcpu : public StaticReceiver<Vcpu>
 		Vcpu(Genode::Entrypoint &ep,
 		     Genode::Vm_connection &vm_con,
 		     Genode::Allocator &alloc, Genode::Env &env,
-		     Genode::Lock &vcpu_lock, VCpu *unsynchronized_vcpu,
+		     Genode::Mutex &vcpu_mutex, VCpu *unsynchronized_vcpu,
 		     Seoul::Guest_memory &guest_memory, Synced_motherboard &motherboard,
 		     bool vmx, bool svm, bool map_small, bool rdtsc)
 		:
@@ -197,7 +197,7 @@ class Vcpu : public StaticReceiver<Vcpu>
 
 			_guest_memory(guest_memory),
 			_motherboard(motherboard),
-			_vcpu(vcpu_lock, unsynchronized_vcpu)
+			_vcpu(vcpu_mutex, unsynchronized_vcpu)
 		{
 			if (!_svm && !_vmx)
 				Logging::panic("no SVM/VMX available, sorry");
@@ -764,10 +764,10 @@ class Machine : public StaticReceiver<Machine>
 		Genode::Heap          &_heap;
 		Genode::Vm_connection &_vm_con;
 		Clock                  _clock;
-		Genode::Lock           _motherboard_lock;
+		Genode::Mutex          _motherboard_mutex { };
 		Motherboard            _unsynchronized_motherboard;
 		Synced_motherboard     _motherboard;
-		Genode::Lock           _timeouts_lock { };
+		Genode::Mutex          _timeouts_mutex { };
 		TimeoutList<32, void>  _unsynchronized_timeouts { };
 		Synced_timeout_list    _timeouts;
 		Seoul::Guest_memory   &_guest_memory;
@@ -912,7 +912,7 @@ class Machine : public StaticReceiver<Machine>
 					_vcpus_active.set(_vcpus_up, 1);
 
 					Vcpu * vcpu = new Vcpu(*ep, _vm_con, _heap, _env,
-					                       _motherboard_lock, msg.vcpu,
+					                       _motherboard_mutex, msg.vcpu,
 					                       _guest_memory, _motherboard,
 					                       has_vmx, has_svm, _map_small,
 					                       _rdtsc_exit);
@@ -967,11 +967,11 @@ class Machine : public StaticReceiver<Machine>
 						_unsynchronized_motherboard.bus_console.send(msgcon);
 					}
 
-					_motherboard_lock.unlock();
+					_motherboard_mutex.release();
 
 					_vcpus[vcpu_id]->block();
 
-					_motherboard_lock.lock();
+					_motherboard_mutex.acquire();
 
 					if (!_vcpus_active.get(0, 64)) {
 						MessageConsole msgcon(MessageConsole::Type::TYPE_RESET);
@@ -1186,16 +1186,17 @@ class Machine : public StaticReceiver<Machine>
 		:
 			_env(env), _heap(heap), _vm_con(vm_con),
 			_clock(Attached_rom_dataspace(env, "platform_info").xml().sub_node("hardware").sub_node("tsc").attribute_value("freq_khz", 0ULL) * 1000ULL),
-			_motherboard_lock(Genode::Lock::LOCKED),
 			_unsynchronized_motherboard(&_clock, nullptr),
-			_motherboard(_motherboard_lock, &_unsynchronized_motherboard),
-			_timeouts(_timeouts_lock, &_unsynchronized_timeouts),
+			_motherboard(_motherboard_mutex, &_unsynchronized_motherboard),
+			_timeouts(_timeouts_mutex, &_unsynchronized_timeouts),
 			_guest_memory(guest_memory),
 			_boot_modules(boot_modules),
 			_map_small(map_small),
 			_rdtsc_exit(rdtsc_exit),
 			_same_cpu(vmm_vcpu_same_cpu)
 		{
+			_motherboard_mutex.acquire();
+
 			_timeouts()->init();
 
 			/* register host operations, called back by the VMM */
@@ -1241,18 +1242,18 @@ class Machine : public StaticReceiver<Machine>
 			Xml_node node = machine_node.sub_node();
 			for (;; node = node.next()) {
 
-				enum { MODEL_NAME_MAX_LEN = 32 };
-				char name[MODEL_NAME_MAX_LEN];
-				node.type_name(name, sizeof(name));
+				typedef String<32> Model_name;
+
+				Model_name const name = node.type();
 
 				if (verbose)
-					Genode::log("device: ", (char const *)name);
+					Genode::log("device: ", name);
 
-				Device_model_info *dmi = device_model_registry()->lookup(name);
+				Device_model_info *dmi = device_model_registry()->lookup(name.string());
 
 				if (!dmi) {
 					Genode::error("configuration error: device model '",
-					              (char const *)name, "' does not exist");
+					              name, "' does not exist");
 					throw Config_error();
 				}
 
@@ -1266,15 +1267,11 @@ class Machine : public StaticReceiver<Machine>
 					argv[i] = ~0UL;
 
 				for (int i = 0; dmi->arg_names[i] && (i < MAX_ARGS); i++) {
-
-					try {
-						Xml_node::Attribute arg = node.attribute(dmi->arg_names[i]);
-						arg.value(&argv[i]);
-
+					if (node.has_attribute(dmi->arg_names[i])) {
+						argv[i] = node.attribute_value(dmi->arg_names[i], ~0UL);
 						if (verbose)
 							Genode::log(" arg[", i, "]: ", Genode::Hex(argv[i]));
 					}
-					catch (Xml_node::Nonexistent_attribute) { }
 				}
 
 				/*
@@ -1338,7 +1335,7 @@ class Machine : public StaticReceiver<Machine>
 
 			Logging::printf("INIT done\n");
 
-			_motherboard_lock.unlock();
+			_motherboard_mutex.release();
 		}
 
 		Synced_motherboard &motherboard() { return _motherboard; }
@@ -1390,27 +1387,24 @@ void Component::construct(Genode::Env &env)
 	Genode::log(" framebuffer ", width, "x", height);
 
 	/* setup framebuffer memory for guest */
-	static Nitpicker::Connection nitpicker { env };
-	nitpicker.buffer(Framebuffer::Mode(width, height,
-	                                   Framebuffer::Mode::RGB565), false);
+	static Gui::Connection gui { env };
+	gui.buffer(Framebuffer::Mode { .area = { width, height } }, false);
 
-	static Framebuffer::Session  &framebuffer { *nitpicker.framebuffer() };
-	Framebuffer::Mode           const fb_mode { framebuffer.mode() };
+	static Framebuffer::Session &framebuffer { *gui.framebuffer() };
+	Framebuffer::Mode      const fb_mode     { framebuffer.mode() };
 
-	size_t const fb_size = Genode::align_addr(fb_mode.width() *
-	                                          fb_mode.height() *
+	size_t const fb_size = Genode::align_addr(fb_mode.area.count() *
 	                                          fb_mode.bytes_per_pixel(), 12);
 
-	typedef Nitpicker::Session::View_handle View_handle;
-	typedef Nitpicker::Session::Command Command;
+	typedef Gui::Session::View_handle View_handle;
+	typedef Gui::Session::Command Command;
 
-	View_handle view = nitpicker.create_view();
-	Nitpicker::Rect rect(Nitpicker::Point(0, 0),
-	                     Nitpicker::Area(fb_mode.width(), fb_mode.height()));
+	View_handle view = gui.create_view();
+	Gui::Rect rect(Gui::Point(0, 0), fb_mode.area);
 
-	nitpicker.enqueue<Command::Geometry>(view, rect);
-	nitpicker.enqueue<Command::To_front>(view, View_handle());
-	nitpicker.execute();
+	gui.enqueue<Command::Geometry>(view, rect);
+	gui.enqueue<Command::To_front>(view, View_handle());
+	gui.execute();
 
 	/* setup guest memory */
 	static Seoul::Guest_memory guest_memory(env, heap, vm_con, vm_size);
@@ -1453,7 +1447,7 @@ void Component::construct(Genode::Env &env)
 	/* create console thread */
 	static Seoul::Console vcon(env, heap, machine.motherboard(),
 	                           machine.unsynchronized_motherboard(),
-	                           nitpicker, guest_memory);
+	                           gui, guest_memory);
 
 	vcon.register_host_operations(machine.unsynchronized_motherboard());
 

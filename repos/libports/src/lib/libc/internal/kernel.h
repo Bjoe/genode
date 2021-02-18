@@ -34,13 +34,15 @@
 #include <internal/suspend.h>
 #include <internal/resume.h>
 #include <internal/select.h>
-#include <internal/kernel_routine.h>
 #include <internal/current_time.h>
 #include <internal/kernel_timer_accessor.h>
 #include <internal/watch.h>
 #include <internal/signal.h>
 #include <internal/monitor.h>
 #include <internal/pthread.h>
+#include <internal/cwd.h>
+#include <internal/atexit.h>
+#include <internal/rtc.h>
 
 namespace Libc {
 	class Kernel;
@@ -105,9 +107,10 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
                             Suspend,
                             Monitor,
                             Select,
-                            Kernel_routine_scheduler,
                             Current_time,
-                            Watch
+                            Current_real_time,
+                            Watch,
+                            Cwd
 {
 	private:
 
@@ -155,6 +158,7 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 		Vfs_plugin _vfs { _libc_env, _libc_env.vfs_env(), _heap, *this,
 		                  _update_mtime ? Vfs_plugin::Update_mtime::YES
 		                                : Vfs_plugin::Update_mtime::NO,
+		                  *this /* current_real_time */,
 		                  _libc_env.config() };
 
 		bool  const _cloned = _libc_env.libc_config().attribute_value("cloned", false);
@@ -167,9 +171,18 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 			     : Xml_node("<empty/>");
 		}
 
+		Xml_node _pthread_config()
+		{
+			return _libc_env.libc_config().has_sub_node("pthread")
+			     ? _libc_env.libc_config().sub_node("pthread")
+			     : Xml_node("<pthread/>");
+		}
+
 		typedef String<Vfs::MAX_PATH_LEN> Config_attr;
 
 		Config_attr const _rtc_path = _libc_env.libc_config().attribute_value("rtc", Config_attr());
+
+		Constructible<Rtc> _rtc { };
 
 		/* handler for watching the stdout's info pseudo file */
 		Constructible<Watch_handler<Kernel>> _terminal_resize_handler { };
@@ -183,16 +196,17 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 
 		Signal _signal { _pid };
 
+		Atexit _atexit { _heap };
+
 		Reconstructible<Io_signal_handler<Kernel>> _resume_main_handler {
 			_env.ep(), *this, &Kernel::_resume_main };
 
 		jmp_buf _kernel_context;
 		jmp_buf _user_context;
 		bool    _valid_user_context          = false;
-		bool    _dispatch_pending_io_signals = false;
 
 		/* io_progress_handler marker */
-		bool _io_ready { false };
+		bool _io_progressed { false };
 
 		Thread &_myself { *Thread::myself() };
 
@@ -204,8 +218,6 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 			_myself.alloc_secondary_stack(_myself.name().string(),
 			                              _user_stack_size()) };
 
-		void (*_original_suspended_callback)() = nullptr;
-
 		enum State { KERNEL, USER };
 
 		State _state = KERNEL;
@@ -216,11 +228,8 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 		bool              _app_returned = false;
 
 		bool _resume_main_once  = false;
-		bool _suspend_scheduled = false;
 
 		Select_handler_base *_scheduled_select_handler = nullptr;
-
-		Kernel_routine *_kernel_routine = nullptr;
 
 		void _resume_main() { _resume_main_once = true; }
 
@@ -264,32 +273,26 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 
 		Pthread_pool _pthreads { _timer_accessor };
 
-		Monitor::Pool _monitors { };
+		Monitor::Pool _monitors { *this };
 
 		Reconstructible<Io_signal_handler<Kernel>> _execute_monitors {
 			_env.ep(), *this, &Kernel::_monitors_handler };
 
+		Monitor::Pool::State _execute_monitors_pending = Monitor::Pool::State::ALL_COMPLETE;
+
+		Constructible<Main_job> _main_monitor_job { };
+
 		void _monitors_handler()
 		{
-			_monitors.execute_monitors();
+			/* mark monitors for execution when running in kernel only */
+			_execute_monitors_pending = Monitor::Pool::State::JOBS_PENDING;
+			_io_progressed = true;
 		}
 
 		Constructible<Clone_connection> _clone_connection { };
 
-		struct Resumer
-		{
-			GENODE_RPC(Rpc_resume, void, resume);
-			GENODE_RPC_INTERFACE(Rpc_resume);
-		};
+		Absolute_path _cwd { "/" };
 
-		struct Resumer_component : Rpc_object<Resumer, Resumer_component>
-		{
-			Kernel &_kernel;
-
-			Resumer_component(Kernel &kernel) : _kernel(kernel) { }
-
-			void resume() { _kernel.run_after_resume(); }
-		};
 
 		/**
 		 * Trampoline to application (user) code
@@ -346,7 +349,7 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 				exit(1);
 			}
 
-			if (!check.suspend() && !_kernel_routine)
+			if (!check.suspend())
 				return timeout_ms;
 
 			if (timeout_ms > 0)
@@ -415,6 +418,7 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 				/* _setjmp() returned directly -> switch to user stack and call application code */
 
 				if (_cloned) {
+					_main_monitor_job->complete();
 					_switch_to_user();
 				} else {
 					_state = USER;
@@ -426,48 +430,79 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 
 			/* _setjmp() returned after _longjmp() - user context suspended */
 
-			while ((!_app_returned) && (!_suspend_scheduled)) {
+			while ((!_app_returned)) {
 
-				if (_kernel_routine) {
-					Kernel_routine &routine = *_kernel_routine;
+				/*
+				 * Dispatch all pending I/O signals at once and execute
+				 * monitors that may now become able to complete.
+				 */
+				auto dispatch_all_pending_io_signals = [&] ()
+				{
+					while (_env.ep().dispatch_pending_io_signal());
+				};
 
-					/* the 'kernel_routine' may install another kernel routine */
-					_kernel_routine = nullptr;
-					routine.execute_in_kernel();
-					if (!_kernel_routine)
-						_switch_to_user();
-				}
+				dispatch_all_pending_io_signals();
 
-				if (_dispatch_pending_io_signals) {
-					/* dispatch pending signals but don't block */
-					while (_env.ep().dispatch_pending_io_signal()) ;
-				} else {
-					/* block for signals */
+				if (_io_progressed)
+					Kernel::resume_all();
+
+				_io_progressed = false;
+
+				/*
+				 * Execute monitors on kernel entry regardless of any I/O
+				 * because the monitor function may be unrelated to I/O.
+				 */
+				if (_execute_monitors_pending == Monitor::Pool::State::JOBS_PENDING)
+					_execute_monitors_pending = _monitors.execute_monitors();
+
+				/*
+				 * Process I/O signals without returning to the application
+				 * as long as the main thread depends on I/O.
+				 */
+
+				auto main_blocked_in_monitor = [&] ()
+				{
+					/*
+					 * In general, 'resume_all()' only flags the main state but
+					 * does not alter the main monitor job. For exmaple in case
+					 * of a sleep timeout, main is resumed by 'resume_main()'
+					 * in 'Main_blockade::wakeup()' but did not yet return from
+					 * 'suspend()'. The expired state in the main job is set
+					 * only after 'suspend()' returned.
+					 */
+					if (_resume_main_once)
+						return false;
+
+					return _main_monitor_job.constructed()
+					   && !_main_monitor_job->completed()
+					   && !_main_monitor_job->expired();
+				};
+
+				auto main_suspended_for_io = [&] {
+					return _resume_main_once == false; };
+
+				while (main_blocked_in_monitor() || main_suspended_for_io()) {
+
+					/*
+					 * Block for one I/O signal and process all pending ones
+					 * before executing the monitor functions. This avoids
+					 * superflous executions of the monitor functions when
+					 * receiving bursts of I/O signals.
+					 */
 					_env.ep().wait_and_dispatch_one_io_signal();
+
+					dispatch_all_pending_io_signals();
+
+					handle_io_progress();
 				}
 
-				if (!_kernel_routine && _resume_main_once && !_setjmp(_kernel_context))
+				/*
+				 * Return to the application
+				 */
+				if (_resume_main_once && !_setjmp(_kernel_context)) {
 					_switch_to_user();
+				}
 			}
-
-			_suspend_scheduled = false;
-		}
-
-		/*
-		 * Run libc application main context after suspend and resume
-		 */
-		void run_after_resume()
-		{
-			if (!_setjmp(_kernel_context))
-				_switch_to_user();
-
-			while ((!_app_returned) && (!_suspend_scheduled)) {
-				_env.ep().wait_and_dispatch_one_io_signal();
-				if (_resume_main_once && !_setjmp(_kernel_context))
-					_switch_to_user();
-			}
-
-			_suspend_scheduled = false;
 		}
 
 		/**
@@ -506,45 +541,39 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 			                       : _pthreads.suspend_myself(check, timeout_ms);
 		}
 
-		void dispatch_pending_io_signals()
-		{
-			if (!_main_context()) return;
-
-			if (!_setjmp(_user_context)) {
-				_valid_user_context          = true;
-				_dispatch_pending_io_signals = true;
-				_resume_main_once            = true; /* afterwards resume main */
-				_switch_to_kernel();
-			} else {
-				_valid_user_context          = false;
-				_dispatch_pending_io_signals = false;
-				_signal.execute_signal_handlers();
-			}
-		}
-
 		/**
 		 * Monitor interface
 		 */
-		bool _monitor(Genode::Lock &mutex, Function &fn, uint64_t timeout_ms) override
+		Monitor::Result _monitor(Function &fn, uint64_t timeout_ms) override
 		{
 			if (_main_context()) {
-				Main_job job { fn, timeout_ms };
 
-				_monitors.monitor(mutex, job);
-				return job.completed();
+				_main_monitor_job.construct(fn, timeout_ms);
+
+				_monitors.monitor(*_main_monitor_job);
+
+				Monitor::Result const job_result = _main_monitor_job->completed()
+				                                 ? Monitor::Result::COMPLETE
+				                                 : Monitor::Result::TIMEOUT;
+				_main_monitor_job.destruct();
+
+				return job_result;
 
 			} else {
 				Pthread_job job { fn, _timer_accessor, timeout_ms };
 
-				_monitors.monitor(mutex, job);
-				return job.completed();
+				_monitors.monitor(job);
+				return job.completed() ? Monitor::Result::COMPLETE
+				                       : Monitor::Result::TIMEOUT;
 			}
 		}
 
-		void _charge_monitors() override
+		void _trigger_monitor_examination() override
 		{
-			if (_monitors.charge_monitors())
-				Signal_transmitter(*_execute_monitors).submit();
+			if (_main_context())
+				_monitors_handler();
+			else
+				_execute_monitors->local_submit();
 		}
 
 		/**
@@ -554,11 +583,6 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 		{
 			return _timer_accessor.timer().curr_time();
 		}
-
-		/**
-		 * Called from the main context (by fork)
-		 */
-		void schedule_suspend(void(*original_suspended_callback) ());
 
 		/**
 		 * Select interface
@@ -574,33 +598,6 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 		void deschedule_select() override
 		{
 			_scheduled_select_handler = nullptr;
-		}
-
-		/**
-		 * Called from the context of the initial thread (on fork)
-		 */
-		void entrypoint_suspended()
-		{
-			_resume_main_handler.destruct();
-
-			_original_suspended_callback();
-		}
-
-		/**
-		 * Called from the context of the initial thread (after fork)
-		 */
-		void entrypoint_resumed()
-		{
-			_resume_main_handler.construct(_env.ep(), *this, &Kernel::_resume_main);
-
-			Resumer_component resumer { *this };
-
-			Capability<Resumer> resumer_cap =
-				_env.ep().rpc_ep().manage(&resumer);
-
-			resumer_cap.call<Resumer::Rpc_resume>();
-
-			_env.ep().rpc_ep().dissolve(&resumer);
 		}
 
 		/**
@@ -644,16 +641,36 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 				? watch_handle : nullptr;
 		}
 
+		/**
+		 * Cwd interface
+		 */
+		Absolute_path &cwd() override { return _cwd; }
+
+
+		/*********************************
+		 ** Current_real_time interface **
+		 *********************************/
+
+		bool has_real_time() const override
+		{
+			return (_rtc_path != "");
+		}
+
+		timespec current_real_time() override
+		{
+			if (!_rtc.constructed())
+				_rtc.construct(_vfs, _heap, _rtc_path, *this);
+
+			return _rtc->read(current_time());
+		}
+
 
 		/****************************************
 		 ** Vfs::Io_response_handler interface **
 		 ****************************************/
 
-		void read_ready_response() override {
-			_io_ready = true; }
-
-		void io_progress_response() override {
-			_io_ready = true; }
+		void read_ready_response() override  { _io_progressed = true; }
+		void io_progress_response() override { _io_progressed = true; }
 
 
 		/**********************************************
@@ -661,14 +678,6 @@ struct Libc::Kernel final : Vfs::Io_response_handler,
 		 **********************************************/
 
 		void handle_io_progress() override;
-
-		/**
-		 * Kernel_routine_scheduler interface
-		 */
-		void register_kernel_routine(Kernel_routine &kernel_routine) override
-		{
-			_kernel_routine = &kernel_routine;
-		}
 
 
 		/********************************

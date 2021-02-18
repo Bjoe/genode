@@ -159,8 +159,9 @@ proc test_7_router_config { } {
 		<domain name="lan_2" interface="100.200.0.1/24">
 			<dhcp-server ip_first="100.200.0.32"
 			             ip_last="100.200.0.64"
-			             ip_lease_time_sec="3600"
-			             dns_server="8.8.8.8"/>
+			             ip_lease_time_sec="3600">
+				<dns-server ip="8.8.8.8"/>
+			</dhcp-server>
 
 			<tcp dst="10.0.0.0/16">
 				<permit port="2345" domain="lan_3" />
@@ -377,7 +378,10 @@ append config {
 
 	<start name="nic_router" caps="200" priority="-1">
 		<resource name="RAM" quantum="10M"/>
-		<provides><service name="Nic"/></provides>
+		<provides>
+			<service name="Nic"/>
+			<service name="Uplink"/>
+		</provides>
 		<route>
 			<service name="ROM" label="config"> <child name="dynamic_rom" label="nic_router.config"/> </service>
 			<service name="Nic"> <child name="nic_bridge"/> </service>

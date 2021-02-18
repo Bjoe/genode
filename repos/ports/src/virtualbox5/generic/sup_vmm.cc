@@ -17,6 +17,7 @@
 #include <base/heap.h>
 #include <base/log.h>
 #include <base/semaphore.h>
+#include <base/sleep.h>
 #include <util/flex_iterator.h>
 #include <rom_session/connection.h>
 #include <base/attached_rom_dataspace.h>
@@ -382,7 +383,7 @@ int SUPR3CallVMMR0Ex(PVMR0 pVMR0, VMCPUID idCpu, unsigned uOperation,
 
 		Vcpu_handler *vcpu_handler = lookup_vcpu_handler(idCpu);
 		Assert(vcpu_handler);
-		vcpu_handler->halt(u64NowGip + ns_diff);
+		vcpu_handler->halt(ns_diff);
 
 		return VINF_SUCCESS;
 	}
@@ -721,12 +722,14 @@ uint64_t genode_cpu_hz()
 
 	if (!cpu_freq) {
 		try {
-			platform_rom().sub_node("tsc").attribute("freq_khz").value(&cpu_freq);
+			platform_rom().with_sub_node("tsc", [&] (Genode::Xml_node const &tsc) {
+				cpu_freq = tsc.attribute_value("freq_khz", cpu_freq); });
 			cpu_freq *= 1000ULL;
-		} catch (...) {
+		} catch (...) { }
+
+		if (cpu_freq == 0) {
 			Genode::error("could not read out CPU frequency");
-			Genode::Lock lock;
-			lock.lock();
+			Genode::sleep_forever();
 		}
 	}
 
@@ -759,7 +762,7 @@ extern "C" int sched_yield(void)
 
 bool create_emt_vcpu(pthread_t * thread, ::size_t stack_size,
                      void *(*start_routine)(void *), void *arg,
-                     Genode::Cpu_session * cpu_session,
+                     Genode::Cpu_connection * cpu_connection,
                      Genode::Affinity::Location location,
                      unsigned int cpu_id, const char * name, long prio)
 {
@@ -791,7 +794,7 @@ bool create_emt_vcpu(pthread_t * thread, ::size_t stack_size,
 	vcpu_handler_list().insert(vcpu_handler);
 
 	Libc::pthread_create(thread, start_routine, arg,
-	                     stack_size, name, cpu_session, location);
+	                     stack_size, name, cpu_connection, location);
 
 	return true;
 }
@@ -1157,13 +1160,6 @@ class Periodic_gip
 			if (rttimer_func) {
 				Libc::with_libc([&] () {
 					rttimer_func(nullptr, rttimer_obj, 0); });
-			}
-
-			for (Vcpu_handler *vcpu_handler = vcpu_handler_list().first();
-			     vcpu_handler;
-			     vcpu_handler = vcpu_handler->next())
-			{
-				vcpu_handler->check_time();
 			}
 		}
 

@@ -75,10 +75,16 @@ class Nitpicker::User_state
 		 */
 		View_stack &_view_stack;
 
+		/**
+		 * True once the initial screen size becomes known and used as the
+		 * initial (centered) pointer position.
+		 */
+		bool _initial_pointer_position_defined = false;
+
 		/*
 		 * Current pointer position
 		 */
-		Point _pointer_pos;
+		Point _pointer_pos { };
 
 		/*
 		 * Currently pointed-at view owner
@@ -194,17 +200,36 @@ class Nitpicker::User_state
 		 * \param focus  exported focus information, to be consumed by the
 		 *               view stack to tailor its view drawing operations
 		 */
-		User_state(Focus &focus, Global_keys &global_keys, View_stack &view_stack,
-		           Point initial_pointer_pos)
+		User_state(Focus &focus, Global_keys &global_keys, View_stack &view_stack)
 		:
-			_focus(focus), _global_keys(global_keys), _view_stack(view_stack),
-			_pointer_pos(initial_pointer_pos)
+			_focus(focus), _global_keys(global_keys), _view_stack(view_stack)
 		{ }
+
+		/**
+		 * Called whenever the view-stack size has changed
+		 */
+		void sanitize_pointer_position()
+		{
+			Area const screen_size = _view_stack.size();
+
+			/* center pointer initially */
+			if (!_initial_pointer_position_defined) {
+				_pointer_pos = Point(screen_size.w()/2, screen_size.h()/2);
+				_initial_pointer_position_defined = true;
+			}
+
+			/* ensure that pointer remains within screen boundaries */
+			if (screen_size.count() > 0)
+				_pointer_pos = Point(min((int)screen_size.w() - 1, _pointer_pos.x()),
+				                     min((int)screen_size.h() - 1, _pointer_pos.y()));
+		}
 
 
 		/****************************************
 		 ** Interface used by the main program **
 		 ****************************************/
+
+		struct Input_batch { Input::Event *events; size_t count; };
 
 		struct Handle_input_result
 		{
@@ -217,8 +242,7 @@ class Nitpicker::User_state
 			bool const last_clicked_changed;
 		};
 
-		Handle_input_result handle_input_events(Input::Event const *ev_buf,
-		                                        unsigned num_ev);
+		Handle_input_result handle_input_events(Input_batch);
 
 		/**
 		 * Discard all references to specified view owner
@@ -228,7 +252,12 @@ class Nitpicker::User_state
 			bool const hover_changed;
 			bool const focus_changed;
 		};
+
 		Handle_forget_result forget(View_owner const &);
+
+		struct Update_hover_result { bool const hover_changed; };
+
+		Update_hover_result update_hover();
 
 		void report_keystate(Xml_generator &) const;
 		void report_pointer_position(Xml_generator &) const;
@@ -254,12 +283,9 @@ class Nitpicker::User_state
 		 */
 		void focus(View_owner &owner)
 		{
-			/*
-			 * The focus change is not applied immediately but deferred to the
-			 * next call of '_apply_pending_focus_change' via the periodic
-			 * call of 'handle_input_events'.
-			 */
 			_next_focused = &owner;
+
+			_apply_pending_focus_change();
 		}
 
 		void reset_focus() { _next_focused = nullptr; }

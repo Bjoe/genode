@@ -141,9 +141,9 @@ class Platform::Irq_component : public Platform::Irq_proxy
 		                                    Genode::Allocator *heap = nullptr)
 		{
 			static Genode::List<Irq_proxy> proxies;
-			static Genode::Lock            proxies_lock;
+			static Genode::Mutex           proxies_mutex;
 
-			Genode::Lock::Guard lock_guard(proxies_lock);
+			Genode::Mutex::Guard mutex_guard(proxies_mutex);
 
 			/* lookup proxy in database */
 			for (Irq_proxy *p = proxies.first(); p; p = p->next())
@@ -286,13 +286,12 @@ void Platform::Irq_session_component::sigh(Genode::Signal_context_capability sig
 }
 
 
-unsigned short Platform::Irq_routing::rewrite(unsigned char bus, unsigned char dev,
-                                              unsigned char, unsigned char pin)
+unsigned short Platform::Irq_routing::rewrite(Pci::Bdf const bdf, unsigned char pin)
 {
-	unsigned const bridge_bdf_bus = Platform::bridge_bdf(bus);
+	unsigned const bridge_bdf_bus = Platform::bridge_bdf(bdf.bus);
 
 	for (Irq_routing *i = list()->first(); i; i = i->next()) {
-		if ((dev == i->_device) && (pin - 1 == i->_device_pin) &&
+		if ((bdf.device == i->_device) && (pin - 1 == i->_device_pin) &&
 		    (i->_bridge_bdf == bridge_bdf_bus))
 			return i->_gsi;
 	}

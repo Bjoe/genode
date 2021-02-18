@@ -43,8 +43,8 @@ LIBCXX_GCC = $(shell $(CUSTOM_CXX_LIB) $(CC_MARCH) -print-file-name=libsupc++.a)
 #
 # Dummy target used by the build system
 #
-SRC_S         = supc++.o
-SRC_C         = unwind.o
+SRC_O         = supc++.o
+SRC_C         = unwind.c
 CXX_SRC       = $(sort $(CXX_SRC_CC))
 CXX_OBJECTS   = $(addsuffix .o,$(basename $(CXX_SRC)))
 LOCAL_SYMBOLS = $(patsubst %,--localize-symbol=%,$(LIBC_SYMBOLS))
@@ -61,6 +61,15 @@ KEEP_SYMBOLS += _ZTVN10__cxxabiv116__enum_type_infoE
 KEEP_SYMBOLS += _ZN10__cxxabiv121__vmi_class_type_infoD0Ev
 KEEP_SYMBOLS += _ZTVN10__cxxabiv119__pointer_type_infoE
 KEEP_SYMBOLS += _ZTSN10__cxxabiv120__function_type_infoE
+KEEP_SYMBOLS += __cxa_init_primary_exception
+KEEP_SYMBOLS += __cxa_vec_new
+KEEP_SYMBOLS += _ZN9__gnu_cxx9__freeresEv
+KEEP_SYMBOLS += _ZSt17current_exceptionv
+KEEP_SYMBOLS += _ZSt17rethrow_exceptionNSt15__exception_ptr13exception_ptrE
+KEEP_SYMBOLS += _ZSt13set_terminatePFvvE
+KEEP_SYMBOLS += _ZTIPv
+KEEP_SYMBOLS += _ZTISt16nested_exception
+KEEP_SYMBOLS += _ZTVSt16nested_exception
 
 #
 # Include dependency files for the corresponding object files except
@@ -80,7 +89,7 @@ endif
 # Rule to link all libc definitions and libsupc++ libraries
 # and to hide after that the exported libc symbols
 #
-$(SRC_S): $(CXX_OBJECTS)
+$(SRC_O): $(CXX_OBJECTS)
 	$(MSG_MERGE)$@
 	$(VERBOSE)$(LD) $(LD_MARCH) $(addprefix -u ,$(KEEP_SYMBOLS)) -r $(CXX_OBJECTS) $(LIBCXX_GCC) -o $@.tmp
 	$(MSG_CONVERT)$@

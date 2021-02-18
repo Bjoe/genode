@@ -2,8 +2,6 @@
  * \brief  Linux thread facility
  * \author Norman Feske
  * \date   2006-06-13
- *
- * Pretty dumb.
  */
 
 /*
@@ -22,164 +20,136 @@
 #include <base/weak_ptr.h>
 #include <cpu_session/cpu_session.h>
 
-/* base-internal includes */
-#include <base/internal/server_socket_pair.h>
-
 /* core includes */
 #include <pager.h>
 
-namespace Genode {
+namespace Genode { class Platform_thread; }
 
-	class Platform_thread;
 
-	/*
-	 * We hold all Platform_thread objects in a list in order to be able to
-	 * reflect SIGCHLD as exception signals. When a SIGCHILD occurs, we
-	 * determine the PID of the terminated child process via 'wait4'. We use
-	 * the list to find the 'Platform_thread' matching the TID, wherei, in
-	 * turn, we find the exception handler's 'Signal_context_capability'.
-	 */
+/*
+ * We hold all Platform_thread objects in a list in order to be able to
+ * reflect SIGCHLD as exception signals. When a SIGCHILD occurs, we
+ * determine the PID of the terminated child process via 'wait4'. We use
+ * the list to find the 'Platform_thread' matching the TID, wherei, in
+ * turn, we find the exception handler's 'Signal_context_capability'.
+ */
 
-	class Platform_thread : public List<Platform_thread>::Element
-	{
-		private:
+class Genode::Platform_thread : public List<Platform_thread>::Element
+{
+	private:
 
-			struct Registry
-			{
-				Lock                  _lock { };
-				List<Platform_thread> _list { };
+		struct Registry
+		{
+			Mutex                 _mutex { };
+			List<Platform_thread> _list  { };
 
-				void insert(Platform_thread *thread);
-				void remove(Platform_thread *thread);
-
-				/**
-				 * Trigger exception handler for 'Platform_thread' with matching PID.
-				 */
-				void submit_exception(unsigned long pid);
-			};
+			void insert(Platform_thread *thread);
+			void remove(Platform_thread *thread);
 
 			/**
-			 * Return singleton instance of 'Platform_thread::Registry'
+			 * Trigger exception handler for 'Platform_thread' with matching PID.
 			 */
-			static Registry &_registry();
+			void submit_exception(unsigned long pid);
+		};
 
-			unsigned long _tid = -1;
-			unsigned long _pid = -1;
-			char          _name[32] { };
+		/**
+		 * Return singleton instance of 'Platform_thread::Registry'
+		 */
+		static Registry &_registry();
 
-			/**
-			 * Unix-domain socket pair bound to the thread
-			 */
-			Socket_pair _socket_pair { };
+		unsigned long _tid = -1;
+		unsigned long _pid = -1;
+		char          _name[32] { };
 
-			/*
-			 * Dummy pager object that is solely used for storing the
-			 * 'Signal_context_capability' for the thread's exception handler.
-			 */
-			Pager_object _pager { };
+		/*
+		 * Dummy pager object that is solely used for storing the
+		 * 'Signal_context_capability' for the thread's exception handler.
+		 */
+		Pager_object _pager { };
 
-		public:
+	public:
 
-			/**
-			 * Constructor
-			 */
-			Platform_thread(size_t, const char *name, unsigned priority,
-			                Affinity::Location, addr_t);
+		/**
+		 * Constructor
+		 */
+		Platform_thread(size_t, const char *name, unsigned priority,
+		                Affinity::Location, addr_t);
 
-			~Platform_thread();
+		~Platform_thread();
 
-			/**
-			 * Cancel currently blocking operation
-			 */
-			void cancel_blocking();
+		/**
+		 * Pause this thread
+		 */
+		void pause();
 
-			/**
-			 * Pause this thread
-			 */
-			void pause();
+		/**
+		 * Enable/disable single stepping
+		 */
+		void single_step(bool) { }
 
-			/**
-			 * Enable/disable single stepping
-			 */
-			void single_step(bool) { }
+		/**
+		 * Resume this thread
+		 */
+		void resume();
 
-			/**
-			 * Resume this thread
-			 */
-			void resume();
+		/**
+		 * Dummy implementation of platform-thread interface
+		 */
+		Pager_object &pager() { return _pager; }
+		void          pager(Pager_object &) { }
+		int           start(void *, void *) { return 0; }
 
-			/**
-			 * Dummy implementation of platform-thread interface
-			 */
-			Pager_object &pager() { return _pager; }
-			void          pager(Pager_object &) { }
-			int           start(void *, void *) { return 0; }
+		Thread_state state()
+		{
+			warning("Not implemented");
+			throw Cpu_thread::State_access_failed();
+		}
 
-			Thread_state state()
-			{
-				warning("Not implemented");
-				throw Cpu_thread::State_access_failed();
-			}
+		void state(Thread_state)
+		{
+			warning("Not implemented");
+			throw Cpu_thread::State_access_failed();
+		}
 
-			void state(Thread_state)
-			{
-				warning("Not implemented");
-				throw Cpu_thread::State_access_failed();
-			}
+		const char   *name() { return _name; }
 
-			const char   *name() { return _name; }
+		/**
+		 * Set the executing CPU for this thread
+		 *
+		 * SMP is currently not directly supported on Genode/Linux
+		 * (but indirectly by the Linux kernel).
+		 */
+		void affinity(Affinity::Location) { }
 
-			/**
-			 * Set the executing CPU for this thread
-			 *
-			 * SMP is currently not directly supported on Genode/Linux
-			 * (but indirectly by the Linux kernel).
-			 */
-			void affinity(Affinity::Location) { }
+		/**
+		 * Request the affinity of this thread
+		 */
+		Affinity::Location affinity() const { return Affinity::Location(); }
 
-			/**
-			 * Request the affinity of this thread
-			 */
-			Affinity::Location affinity() const { return Affinity::Location(); }
+		/**
+		 * Register process ID and thread ID of thread
+		 */
+		void thread_id(int pid, int tid) { _pid = pid, _tid = tid; }
 
-			/**
-			 * Register process ID and thread ID of thread
-			 */
-			void thread_id(int pid, int tid) { _pid = pid, _tid = tid; }
+		/**
+		 * Notify Genode::Signal handler about sigchld
+		 */
+		static void submit_exception(int pid)
+		{
+			_registry().submit_exception(pid);
+		}
 
-			/**
-			 * Return client-side socket descriptor
-			 *
-			 * For more information, please refer to the comments in
-			 * 'linux_cpu_session/linux_cpu_session.h'.
-			 */
-			int client_sd();
+		/**
+		 * Set CPU quota of the thread to 'quota'
+		 */
+		void quota(size_t const) { /* not supported*/ }
 
-			/**
-			 * Return server-side socket descriptor
-			 */
-			int server_sd();
+		/**
+		 * Return execution time consumed by the thread
+		 */
+		Trace::Execution_time execution_time() const { return { 0, 0 }; }
 
-			/**
-			 * Notify Genode::Signal handler about sigchld
-			 */
-			static void submit_exception(int pid)
-			{
-				_registry().submit_exception(pid);
-			}
-
-			/**
-			 * Set CPU quota of the thread to 'quota'
-			 */
-			void quota(size_t const) { /* not supported*/ }
-
-			/**
-			 * Return execution time consumed by the thread
-			 */
-			Trace::Execution_time execution_time() const { return { 0, 0 }; }
-
-			unsigned long pager_object_badge() const { return 0; }
-	};
-}
+		unsigned long pager_object_badge() const { return 0; }
+};
 
 #endif /* _CORE__INCLUDE__PLATFORM_THREAD_H_ */

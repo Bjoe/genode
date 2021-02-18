@@ -16,7 +16,7 @@
 #include <base/heap.h>
 #include <base/attached_rom_dataspace.h>
 #include <base/registry.h>
-#include <nitpicker_session/connection.h>
+#include <gui_session/connection.h>
 #include <os/reporter.h>
 #include <input/event.h>
 #include <input/keycodes.h>
@@ -41,9 +41,9 @@ struct Global_keys_handler::Main
 	Attached_rom_dataspace _config_ds { _env, "config" };
 
 	/**
-	 * Nitpicker connection to obtain user input
+	 * GUI connection to obtain user input
 	 */
-	Nitpicker::Connection _nitpicker { _env, "input" };
+	Gui::Connection _nitpicker { _env, "input" };
 
 	/**
 	 * Input-event buffer

@@ -68,13 +68,6 @@ extern "C" void abort()
 }
 
 
-extern void genode_atexit(void (*func)(void));                                                                                                                                                                                               
-extern "C" void atexit(void (*func)(void))
-{
-    genode_atexit(func);
-}
-
-
 extern "C" int atoi(const char *nptr)
 {
 	Genode::error("atoi() called: not implemented");
@@ -263,7 +256,9 @@ extern "C" void *malloc(size_t size)
 
 extern "C" char *strcpy(char *dest, const char *src)
 {
-	return Genode::strncpy(dest, src, Genode::strlen(src) + 1);
+	Genode::copy_cstring(dest, src, Genode::strlen(src) + 1);
+
+	return dest;
 }
 
 

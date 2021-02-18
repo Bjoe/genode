@@ -41,7 +41,7 @@ Linux_dataspace::Filename Dataspace_component::_file_name(const char *args)
 		throw Service_denied();
 	}
 
-	strncpy(fname.buf, label.last_element().string(), sizeof(fname.buf));
+	copy_cstring(fname.buf, label.last_element().string(), sizeof(fname.buf));
 
 	/* only files inside the current working directory are allowed */
 	for (const char *c = fname.buf; *c; ++c)
@@ -61,16 +61,20 @@ Genode::size_t Dataspace_component::_file_size()
 
 
 Dataspace_component::Dataspace_component(const char *args)
-: _fname(_file_name(args)),
-  _size(_file_size()),
-  _addr(0),
-  _fd(lx_open(_fname.buf, O_RDONLY | LX_O_CLOEXEC, S_IRUSR | S_IXUSR)),
-  _writable(false),
-  _owner(0) { }
+:
+	_fname(_file_name(args)),
+	_size(_file_size()),
+	_addr(0),
+	_cap(_fd_to_cap(lx_open(_fname.buf, O_RDONLY | LX_O_CLOEXEC, S_IRUSR | S_IXUSR))),
+	_writable(false),
+	_owner(0)
+{ }
+
 
 Dataspace_component::Dataspace_component(size_t size, addr_t, addr_t phys_addr,
-        Cache_attribute, bool writable, Dataspace_owner *_owner) :
-    _size(size), _addr(phys_addr), _fd(-1), _writable(writable), _owner(_owner)
+        Cache_attribute, bool writable, Dataspace_owner *_owner)
+:
+	_size(size), _addr(phys_addr), _cap(), _writable(writable), _owner(_owner)
 {
     _fname.buf[0] = 0;
 }

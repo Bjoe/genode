@@ -22,7 +22,7 @@
 /* Genode includes */
 #include <util/list.h>
 #include <util/string.h>
-#include <base/lock.h>
+#include <base/mutex.h>
 #include <base/trace/types.h>
 #include <base/env.h>
 #include <base/weak_ptr.h>
@@ -88,9 +88,9 @@ class Genode::Trace::Subject
 					if (_size)
 						_ram_ptr->free(_ds);
 
+					_ds      = ram.alloc(size); /* may throw */
 					_ram_ptr = &ram;
 					_size    = size;
-					_ds      = ram.alloc(size);
 				}
 
 				/**
@@ -220,17 +220,17 @@ class Genode::Trace::Subject
 			/* check state and throw error in case subject is not traceable */
 			_traceable_or_throw();
 
-			_policy_id = policy_id;
-
 			_buffer.setup(ram, size);
 			if(!_policy.setup(ram, local_rm, policy_ds, policy_size))
-					throw Already_traced();
+				throw Already_traced();
 
 			/* inform trace source about the new buffer */
 			Locked_ptr<Source> source(_source);
 
 			if (!source->try_acquire(*this))
 				throw Traced_by_other_session();
+
+			_policy_id = policy_id;
 
 			_allocated_memory = policy_size + size;
 
@@ -309,10 +309,9 @@ class Genode::Trace::Subject_registry
 		typedef List<Subject> Subjects;
 
 		Allocator       &_md_alloc;
-		Ram_allocator   &_ram;
 		Source_registry &_sources;
 		unsigned         _id_cnt  { 0 };
-		Lock             _lock    { };
+		Mutex            _mutex   { };
 		Subjects         _entries { };
 
 		/**
@@ -396,10 +395,10 @@ class Genode::Trace::Subject_registry
 		 * \param ram       allocator used for the allocation of trace
 		 *                  buffers and policy dataspaces.
 		 */
-		Subject_registry(Allocator &md_alloc, Ram_allocator &ram,
+		Subject_registry(Allocator &md_alloc,
 		                 Source_registry &sources)
 		:
-			_md_alloc(md_alloc), _ram(ram), _sources(sources)
+			_md_alloc(md_alloc), _sources(sources)
 		{ }
 
 		/**
@@ -407,7 +406,7 @@ class Genode::Trace::Subject_registry
 		 */
 		~Subject_registry()
 		{
-			Lock guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			while (Subject *s = _entries.first())
 				_unsynchronized_destroy(*s);
@@ -418,7 +417,7 @@ class Genode::Trace::Subject_registry
 		 */
 		void import_new_sources(Source_registry &)
 		{
-			Lock guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			_sources.export_sources(_tester, _inserter);
 		}
@@ -428,11 +427,27 @@ class Genode::Trace::Subject_registry
 		 */
 		size_t subjects(Subject_id *dst, size_t dst_len)
 		{
-			Lock guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			unsigned i = 0;
 			for (Subject *s = _entries.first(); s && i < dst_len; s = s->next())
 				dst[i++] = s->id();
+			return i;
+		}
+
+		/**
+		 * Retrieve Subject_infos batched
+		 */
+		size_t subjects(Subject_info * const dst, Subject_id * ids, size_t const len)
+		{
+			Mutex::Guard guard(_mutex);
+
+			unsigned i = 0;
+			for (Subject *s = _entries.first(); s && i < len; s = s->next()) {
+				ids[i]   = s->id();
+				dst[i++] = s->info();
+			}
+
 			return i;
 		}
 
@@ -446,7 +461,7 @@ class Genode::Trace::Subject_registry
 		 */
 		size_t release(Subject_id subject_id)
 		{
-			Lock guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			Subject &subject = _unsynchronized_lookup_by_id(subject_id);
 			return _unsynchronized_destroy(subject);
@@ -454,7 +469,7 @@ class Genode::Trace::Subject_registry
 
 		Subject &lookup_by_id(Subject_id id)
 		{
-			Lock guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			return _unsynchronized_lookup_by_id(id);
 		}

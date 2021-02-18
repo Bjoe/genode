@@ -85,7 +85,7 @@ void Thread::_init_platform_thread(size_t weight, Type type)
 		_thread_cap = main_thread_cap();
 
 		native_thread().exc_pt_sel = 0;
-		native_thread().ec_sel     = Nova::PT_SEL_MAIN_EC;
+		native_thread().ec_sel     = Nova::EC_SEL_THREAD;
 
 		request_native_ec_cap(PT_SEL_PAGE_FAULT, native_thread().ec_sel);
 		return;
@@ -125,7 +125,6 @@ void Thread::_deinit_platform_thread()
 
 	if (native_thread().ec_sel != Native_thread::INVALID_INDEX) {
 		revoke(Obj_crd(native_thread().ec_sel, 0));
-		cap_map().remove(native_thread().ec_sel, 0, false);
 	}
 
 	/* de-announce thread */
@@ -152,16 +151,14 @@ void Thread::start()
 	/* create EC at core */
 
 	try {
-		Nova_native_cpu::Thread_type thread_type;
+		Cpu_session::Native_cpu::Thread_type thread_type;
 
-		if (native_thread().vcpu)
-			thread_type = Nova_native_cpu::Thread_type::VCPU;
-		else if (global)
-			thread_type = Nova_native_cpu::Thread_type::GLOBAL;
+		if (global)
+			thread_type = Cpu_session::Native_cpu::Thread_type::GLOBAL;
 		else
-			thread_type = Nova_native_cpu::Thread_type::LOCAL;
+			thread_type = Cpu_session::Native_cpu::Thread_type::LOCAL;
 
-		Nova_native_cpu::Exception_base exception_base { native_thread().exc_pt_sel };
+		Cpu_session::Native_cpu::Exception_base exception_base { native_thread().exc_pt_sel };
 
 		Nova_native_cpu_client native_cpu(_cpu_session->native_cpu());
 		native_cpu.thread_type(_thread_cap, thread_type, exception_base);
@@ -174,36 +171,23 @@ void Thread::start()
 	cpu_thread.start(thread_ip, _stack->top());
 
 	/* request native EC thread cap */ 
-	native_thread().ec_sel = cap_map().insert();
-	if (native_thread().ec_sel == Native_thread::INVALID_INDEX)
-		throw Cpu_session::Thread_creation_failed();
+	native_thread().ec_sel = native_thread().exc_pt_sel + Nova::EC_SEL_THREAD;
 
 	/*
 	 * Requested ec cap that is used for recall and
-	 * creation of portals (Nova_native_pd::alloc_rpc_cap).
+	 * creation of portals (Native_pd::alloc_rpc_cap).
 	 */
 	request_native_ec_cap(native_thread().exc_pt_sel + Nova::PT_SEL_PAGE_FAULT,
 	                      native_thread().ec_sel);
 
 	using namespace Nova;
 
-	if (!native_thread().vcpu) {
-		/* default: we don't accept any mappings or translations */
-		Utcb * utcb_obj = reinterpret_cast<Utcb *>(utcb());
-		utcb_obj->crd_rcv = Obj_crd();
-		utcb_obj->crd_xlt = Obj_crd();
-	}
+	/* default: we don't accept any mappings or translations */
+	Utcb * utcb_obj = reinterpret_cast<Utcb *>(utcb());
+	utcb_obj->crd_rcv = Obj_crd();
+	utcb_obj->crd_xlt = Obj_crd();
 
 	if (global)
 		/* request creation of SC to let thread run*/
 		cpu_thread.resume();
-}
-
-
-void Thread::cancel_blocking()
-{
-	using namespace Nova;
-
-	if (sm_ctrl(native_thread().exc_pt_sel + SM_SEL_EC, SEMAPHORE_UP))
-		nova_die();
 }

@@ -38,19 +38,19 @@ class Platform_thread_registry : Noncopyable
 	private:
 
 		List<Platform_thread> _threads { };
-		Lock                  _lock    { };
+		Mutex                 _mutex   { };
 
 	public:
 
 		void insert(Platform_thread &thread)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 			_threads.insert(&thread);
 		}
 
 		void remove(Platform_thread &thread)
 		{
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 			_threads.remove(&thread);
 		}
 
@@ -59,7 +59,7 @@ class Platform_thread_registry : Noncopyable
 			unsigned installed = 0;
 			bool     result    = true;
 
-			Lock::Guard guard(_lock);
+			Mutex::Guard guard(_mutex);
 
 			for (Platform_thread *t = _threads.first(); t; t = t->next()) {
 				if (t->pager_object_badge() == pager_object_badge) {
@@ -202,12 +202,6 @@ void Platform_thread::state(Thread_state)
 {
 	warning(__PRETTY_FUNCTION__, " not implemented");
 	throw Cpu_thread::State_access_failed();
-}
-
-
-void Platform_thread::cancel_blocking()
-{
-	seL4_Signal(_info.lock_sel.value());
 }
 
 

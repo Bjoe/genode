@@ -17,33 +17,22 @@
 #define _INCLUDE__FOC__THREAD_STATE_H_
 
 #include <base/capability.h>
-#include <base/lock.h>
 #include <base/thread_state.h>
-
-/* Fiasco includes */
-namespace Fiasco {
-#include <l4/sys/types.h>
-}
+#include <foc/syscall.h>
 
 namespace Genode { struct Foc_thread_state; }
 
 
 struct Genode::Foc_thread_state : Thread_state
 {
-	Fiasco::l4_cap_idx_t  kcap;         /* thread's gate cap in its pd */
-	int                   id;           /* id of gate capability */
-	addr_t                utcb;         /* thread's utcb in its pd */
-	unsigned              exceptions;   /* counts exceptions raised by the thread */
-	bool                  paused;       /* indicates whether thread is stopped */
-	bool                  in_exception; /* true if thread is in exception */
-	Lock                  lock { };
+	Foc::l4_cap_idx_t  kcap;         /* thread's gate cap in its PD */
+	int                id;           /* ID of gate capability */
+	addr_t             utcb;         /* thread's UTCB in its PD */
 
 	/**
 	 * Constructor
 	 */
-	Foc_thread_state()
-	: kcap(Fiasco::L4_INVALID_CAP), id(0), utcb(0), exceptions(0),
-	  paused(false), in_exception(false) { }
+	Foc_thread_state() : kcap(Foc::L4_INVALID_CAP), id(0), utcb(0) { }
 };
 
 #endif /* _INCLUDE__FOC__THREAD_STATE_H_ */

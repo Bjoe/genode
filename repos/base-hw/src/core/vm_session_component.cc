@@ -23,10 +23,6 @@
 
 using namespace Genode;
 
-static Core_mem_allocator & cma() {
-	return static_cast<Core_mem_allocator&>(platform().core_mem_alloc()); }
-
-
 size_t Vm_session_component::_ds_size() {
 	return align_addr(sizeof(Board::Vm_state), get_page_size_log2()); }
 
@@ -41,17 +37,16 @@ addr_t Vm_session_component::_alloc_ds()
 }
 
 
-void Vm_session_component::_run(Vcpu_id id)
-{
-	if (_valid_id(id) && _vcpus[id.id].kobj.constructed())
-		Kernel::run_vm(*_vcpus[id.id].kobj);
-}
+void Vm_session_component::_run(Vcpu_id) { }
 
 
-void Vm_session_component::_pause(Vcpu_id id)
+void Vm_session_component::_pause(Vcpu_id) { }
+
+
+Capability<Vm_session::Native_vcpu> Vm_session_component::_native_vcpu(Vcpu_id id)
 {
-	if (_valid_id(id) && _vcpus[id.id].kobj.constructed())
-		Kernel::pause_vm(*_vcpus[id.id].kobj);
+	if (!_valid_id(id)) { return Capability<Vm_session::Native_vcpu>(); }
+	return reinterpret_cap_cast<Vm_session::Native_vcpu>(_vcpus[id.id].kobj.cap());
 }
 
 
@@ -71,8 +66,7 @@ void Vm_session_component::_exception_handler(Signal_context_capability handler,
 
 	unsigned const cpu = vcpu.location.valid() ? vcpu.location.xpos() : 0;
 
-	if (!vcpu.kobj.create(cpu, vcpu.ds_addr, Capability_space::capid(handler),
-	                      cma().phys_addr(&_table)))
+	if (!vcpu.kobj.create(cpu, vcpu.ds_addr, Capability_space::capid(handler), _id))
 		Genode::warning("Cannot instantiate vm kernel object, ",
 		                "invalid signal context?");
 }
@@ -82,7 +76,7 @@ Vm_session::Vcpu_id Vm_session_component::_create_vcpu(Thread_capability tcap)
 {
 	using namespace Genode;
 
-	if (_id_alloc == Board::VCPU_MAX) return Vcpu_id{Vcpu_id::INVALID};
+	if (_vcpu_id_alloc == Board::VCPU_MAX) return Vcpu_id{Vcpu_id::INVALID};
 
 	Affinity::Location vcpu_location;
 	auto lambda = [&] (Cpu_thread_component *ptr) {
@@ -91,7 +85,7 @@ Vm_session::Vcpu_id Vm_session_component::_create_vcpu(Thread_capability tcap)
 	};
 	_ep.apply(tcap, lambda);
 
-	Vcpu & vcpu = _vcpus[_id_alloc];
+	Vcpu & vcpu = _vcpus[_vcpu_id_alloc];
 	vcpu.ds_cap = _constrained_md_ram_alloc.alloc(_ds_size(),
 	                                              Cache_attribute::UNCACHED);
 	try {
@@ -102,7 +96,7 @@ Vm_session::Vcpu_id Vm_session_component::_create_vcpu(Thread_capability tcap)
 	}
 
 	vcpu.location = vcpu_location;
-	return Vcpu_id { _id_alloc++ };
+	return Vcpu_id { _vcpu_id_alloc++ };
 }
 
 

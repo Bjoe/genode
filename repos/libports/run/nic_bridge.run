@@ -3,7 +3,7 @@ if {![have_include power_on/qemu]} {
 	exit 0
 }
 
-if {[have_spec rpi3]} {
+if {[have_board rpi3]} {
 	puts "\n Run script is not supported on this platform. \n";
 	exit 0
 }
@@ -42,8 +42,8 @@ install_config {
 		<provides><service name="Timer"/></provides>
 	</start>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1000" managing_system="yes">
+		<resource name="RAM" quantum="32M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
@@ -68,7 +68,7 @@ install_config {
 		</route>
 	</start>
 
-	<start name="server_1">
+	<start name="server_1" caps="120">
 		<binary name="test-lwip_httpsrv"/>
 		<resource name="RAM" quantum="32M"/>
 		<route>
@@ -86,7 +86,7 @@ install_config {
 		</config>
 	</start>
 
-	<start name="server_2">
+	<start name="server_2" caps="120">
 		<binary name="test-lwip_httpsrv"/>
 		<resource name="RAM" quantum="32M"/>
 		<route>
@@ -158,16 +158,8 @@ build_boot_image {
 	test-lwip_httpsrv
 }
 
-proc qemu_nic_model {} {
-	if [have_spec x86]         { return e1000 }
-	if [have_spec lan9118]     { return lan9118 }
-	if [have_spec zynq]        { return cadence_gem }
-	return nic_model_missing
-}
-
 append qemu_args "  -nographic "
-append qemu_args " -netdev user,id=net0 "
-append qemu_args " -net nic,model=[qemu_nic_model],netdev=net0 "
+append_qemu_nic_args
 
 append done_string {.*?\[init -> client_3] .\[31mError: Nic-session creation failed}
 append done_string {.*?\[client_1 -> lwip] rcv .\[32mETH.\[0m 02:02:02:02:42:0.}

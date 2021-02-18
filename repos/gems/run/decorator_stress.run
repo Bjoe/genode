@@ -9,6 +9,7 @@ import_from_depot [depot_user]/src/[base_src] \
                   [depot_user]/src/decorator \
                   [depot_user]/src/libc \
                   [depot_user]/src/libpng \
+                  [depot_user]/src/vfs \
                   [depot_user]/src/zlib
 
 install_config {
@@ -35,23 +36,25 @@ install_config {
 		<provides><service name="Timer"/></provides>
 	</start>
 
-	<start name="drivers" caps="1000">
-		<resource name="RAM" quantum="32M" constrain_phys="yes"/>
+	<start name="drivers" caps="1500" managing_system="yes">
+		<resource name="RAM" quantum="64M"/>
 		<binary name="init"/>
 		<route>
 			<service name="ROM" label="config"> <parent label="drivers.config"/> </service>
-			<service name="Timer"> <child name="timer"/> </service>
+			<service name="Timer">   <child name="timer"/> </service>
+			<service name="Capture"> <child name="nitpicker"/> </service>
+			<service name="Event">   <child name="nitpicker"/> </service>
 			<any-service> <parent/> </any-service>
 		</route>
-		<provides>
-			<service name="Input"/> <service name="Framebuffer"/>
-		</provides>
 	</start>
 
 	<start name="nitpicker" caps="200">
 		<resource name="RAM" quantum="1M"/>
-		<provides><service name="Nitpicker"/></provides>
+		<provides>
+			<service name="Gui"/> <service name="Capture"/> <service name="Event"/>
+		</provides>
 		<config>
+			<capture/> <event/>
 			<domain name="" layer="2" content="client" label="no" />
 			<default-policy domain=""/>
 			<report pointer="yes" />
@@ -82,8 +85,11 @@ install_config {
 		</route>
 	</start>
 
-	<start name="decorator">
+	<start name="decorator" caps="200">
 		<resource name="RAM" quantum="8M"/>
+		<config>
+			<default-policy/>
+		</config>
 		<route>
 			<service name="ROM" label="pointer">
 				<child name="report_rom" /> </service>

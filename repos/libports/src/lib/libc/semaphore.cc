@@ -62,7 +62,9 @@ struct sem : Genode::Noncopyable
 
 		Applicant *_applicants { nullptr };
 		int        _count;
-		Lock       _data_mutex;
+		Mutex      _data_mutex;
+
+		clockid_t  _clock_id { CLOCK_REALTIME };
 
 		/* _data_mutex must be hold when calling the following methods */
 
@@ -100,11 +102,11 @@ struct sem : Genode::Noncopyable
 
 			_append_applicant(&applicant);
 
-			_data_mutex.unlock();
+			_data_mutex.release();
 
 			blockade.block();
 
-			_data_mutex.lock();
+			_data_mutex.acquire();
 
 			if (blockade.woken_up()) {
 				return true;
@@ -158,14 +160,14 @@ struct sem : Genode::Noncopyable
 
 		int trydown()
 		{
-			Lock::Guard lock_guard(_data_mutex);
+			Mutex::Guard guard(_data_mutex);
 
 			return _try_down();
 		}
 
 		int down()
 		{
-			Lock::Guard lock_guard(_data_mutex);
+			Mutex::Guard guard(_data_mutex);
 
 			/* fast path */
 			if (_try_down() == 0)
@@ -178,14 +180,14 @@ struct sem : Genode::Noncopyable
 
 		int down_timed(timespec const &abs_timeout)
 		{
-			Lock::Guard lock_guard(_data_mutex);
+			Mutex::Guard guard(_data_mutex);
 
 			/* fast path */
 			if (_try_down() == 0)
 				return 0;
 
 			timespec abs_now;
-			clock_gettime(CLOCK_REALTIME, &abs_now);
+			clock_gettime(_clock_id, &abs_now);
 
 			Libc::uint64_t const timeout_ms =
 				calculate_relative_timeout_ms(abs_now, abs_timeout);
@@ -200,16 +202,36 @@ struct sem : Genode::Noncopyable
 
 		int up()
 		{
-			Lock::Guard lock_guard(_data_mutex);
+			Mutex::Guard guard(_data_mutex);
 
 			_count_up();
 
 			return 0;
 		}
+
+		int set_clock(clockid_t clock_id)
+		{
+			switch (clock_id) {
+			case CLOCK_REALTIME:
+				_clock_id = CLOCK_REALTIME;
+				return 0;
+			case CLOCK_MONOTONIC:
+				_clock_id = CLOCK_MONOTONIC;
+				return 0;
+			default:
+				break;
+			}
+			return -1;
+		}
 };
 
 
 extern "C" {
+
+	int sem_set_clock(sem_t *sem, clockid_t clock_id)
+	{
+		return (*sem)->set_clock(clock_id);
+	}
 
 	int sem_close(sem_t *)
 	{

@@ -16,7 +16,12 @@ include:
 	cp -r $(PORT_DIR)/include/* $@/
 	cp -r $(REP_DIR)/include/libc $@/
 	cp -r $(REP_DIR)/include/libc-genode $@/
-	cp    $(REP_DIR)/src/lib/libc/internal/legacy.h $@/libc/
+
+content: lib/mk/ldso_so_support.mk src/lib/ldso/so_support.c
+
+lib/mk/ldso_so_support.mk src/lib/ldso/so_support.c:
+	mkdir -p $(dir $@)
+	cp $(GENODE_DIR)/repos/base/$@ $@
 
 content: LICENSE
 

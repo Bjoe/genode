@@ -40,7 +40,7 @@ extern "C" void _type_init_usb_host_register_types(Genode::Entrypoint*,
                                                    Genode::Env *);
 extern "C" void _type_init_xhci_register_types();
 
-extern Genode::Lock _lock;
+extern Genode::Mutex _mutex;
 
 Qemu::Controller *qemu_controller();
 
@@ -81,7 +81,7 @@ void Qemu::usb_update_devices() {
 
 void Qemu::usb_timer_callback(void (*cb)(void*), void *data)
 {
-	Genode::Lock::Guard g(_lock);
+	Genode::Mutex::Guard guard(_mutex);
 
 	cb(data);
 }
@@ -369,20 +369,26 @@ USBHostDevice *create_usbdevice(void *data)
 
 void remove_usbdevice(USBHostDevice *device)
 {
-	DeviceClass *usb_device_class = &Object_pool::p()->obj[Object_pool::USB_DEVICE]._device_class;
-	DeviceState *usb_device_state = cast_DeviceState(device);
+	try {
+		DeviceClass *usb_device_class = &Object_pool::p()->obj[Object_pool::USB_DEVICE]._device_class;
+		DeviceState *usb_device_state = cast_DeviceState(device);
 
-	if (usb_device_class == nullptr)
-		Genode::error("usb_device_class null");
+		if (usb_device_class == nullptr)
+			Genode::error("usb_device_class null");
 
-	if (usb_device_state == nullptr)
-		Genode::error("usb_device_class null");
+		if (usb_device_state == nullptr)
+			Genode::error("usb_device_state null");
 
-	Error *e = nullptr;
-	usb_device_class->unrealize(usb_device_state, &e);
+		Error *e = nullptr;
+		usb_device_class->unrealize(usb_device_state, &e);
 
-	Wrapper *obj = Object_pool::p()->find_object(device);
-	Object_pool::p()->free_object(obj);
+		Wrapper *obj = Object_pool::p()->find_object(device);
+		if (obj)
+			Object_pool::p()->free_object(obj);
+	} catch (int) {
+		/* thrown by find_object */
+		Genode::warning("usb device unknown");
+	}
 }
 
 
@@ -443,7 +449,7 @@ void qbus_create_inplace(void* bus, size_t size , const char* type,
 	BusState   *b = &w->_bus_state;
 	char const *n = "xhci.0";
 	b->name = (char *)g_malloc(Genode::strlen(n) + 1);
-	Genode::strncpy(b->name, n, Genode::strlen(n) + 1);
+	Genode::copy_cstring(b->name, n, Genode::strlen(n) + 1);
 }
 
 
@@ -545,7 +551,7 @@ struct Controller : public Qemu::Controller
 
 	int    mmio_read(Genode::off_t offset, void *buf, Genode::size_t size)
 	{
-		Genode::Lock::Guard g(_lock);
+		Genode::Mutex::Guard guard(_mutex);
 		Mmio &mmio        = find_region(offset);
 		Genode::off_t reg = offset - mmio.offset;
 
@@ -571,7 +577,7 @@ struct Controller : public Qemu::Controller
 
 	int    mmio_write(Genode::off_t offset, void const *buf, Genode::size_t size)
 	{
-		Genode::Lock::Guard g(_lock);
+		Genode::Mutex::Guard guard(_mutex);
 		Mmio &mmio        = find_region(offset);
 		Genode::off_t reg = offset - mmio.offset;
 		void *ptr         = Object_pool::p()->xhci_state();

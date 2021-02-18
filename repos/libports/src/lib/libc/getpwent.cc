@@ -21,7 +21,6 @@
 #include <stdlib.h>
 
 /* libc-local includes */
-#include <internal/legacy.h>
 #include <internal/errno.h>
 #include <internal/init.h>
 
@@ -45,7 +44,7 @@ struct Libc::Passwd_fields
 
 		Buffer(Passwd_string const &string)
 		{
-			Genode::strncpy(buf, string.string(), sizeof(buf));
+			copy_cstring(buf, string.string(), sizeof(buf));
 		}
 	};
 

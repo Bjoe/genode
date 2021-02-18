@@ -15,9 +15,10 @@
 #include <util/list.h>
 #include <base/component.h>
 #include <base/log.h>
-#include <nitpicker_session/connection.h>
+#include <gui_session/connection.h>
 #include <timer_session/connection.h>
 #include <input/event.h>
+#include <os/pixel_rgb888.h>
 
 using namespace Genode;
 
@@ -25,53 +26,53 @@ class Test_view : public List<Test_view>::Element
 {
 	private:
 
-		typedef Nitpicker::Session::View_handle View_handle;
-		typedef Nitpicker::Session::Command     Command;
+		using View_handle = Gui::Session::View_handle;
+		using Command     = Gui::Session::Command;
 
-		Nitpicker::Session_client &_nitpicker;
-		View_handle                _handle { };
-		int                        _x, _y, _w, _h;
-		const char                *_title;
-		Test_view                 *_parent_view;
+		Gui::Session_client &_gui;
+		View_handle          _handle { };
+		int                  _x, _y, _w, _h;
+		const char          *_title;
+		Test_view           *_parent_view;
 
 	public:
 
-		Test_view(Nitpicker::Session_client *nitpicker,
+		Test_view(Gui::Session_client *gui,
 		          int x, int y, int w, int h,
 		          const char *title,
 		          Test_view *parent_view = 0)
 		:
-			_nitpicker(*nitpicker),
+			_gui(*gui),
 			_x(x), _y(y), _w(w), _h(h), _title(title), _parent_view(parent_view)
 		{
-			using namespace Nitpicker;
+			using namespace Gui;
 
 			View_handle parent_handle;
 
 			if (_parent_view)
-				parent_handle = _nitpicker.view_handle(_parent_view->view_cap());
+				parent_handle = _gui.view_handle(_parent_view->view_cap());
 
-			_handle = _nitpicker.create_view(parent_handle);
+			_handle = _gui.create_view(parent_handle);
 
 			if (parent_handle.valid())
-				_nitpicker.release_view_handle(parent_handle);
+				_gui.release_view_handle(parent_handle);
 
-			Nitpicker::Rect rect(Nitpicker::Point(_x, _y), Nitpicker::Area(_w, _h));
-			_nitpicker.enqueue<Command::Geometry>(_handle, rect);
-			_nitpicker.enqueue<Command::To_front>(_handle, View_handle());
-			_nitpicker.enqueue<Command::Title>(_handle, _title);
-			_nitpicker.execute();
+			Gui::Rect rect(Gui::Point(_x, _y), Gui::Area(_w, _h));
+			_gui.enqueue<Command::Geometry>(_handle, rect);
+			_gui.enqueue<Command::To_front>(_handle, View_handle());
+			_gui.enqueue<Command::Title>(_handle, _title);
+			_gui.execute();
 		}
 
-		Nitpicker::View_capability view_cap()
+		Gui::View_capability view_cap()
 		{
-			return _nitpicker.view_capability(_handle);
+			return _gui.view_capability(_handle);
 		}
 
 		void top()
 		{
-			_nitpicker.enqueue<Command::To_front>(_handle, View_handle());
-			_nitpicker.execute();
+			_gui.enqueue<Command::To_front>(_handle, View_handle());
+			_gui.execute();
 		}
 
 		/**
@@ -87,9 +88,9 @@ class Test_view : public List<Test_view>::Element
 			_x = _parent_view ? x - _parent_view->x() : x;
 			_y = _parent_view ? y - _parent_view->y() : y;
 
-			Nitpicker::Rect rect(Nitpicker::Point(_x, _y), Nitpicker::Area(_w, _h));
-			_nitpicker.enqueue<Command::Geometry>(_handle, rect);
-			_nitpicker.execute();
+			Gui::Rect rect(Gui::Point(_x, _y), Gui::Area(_w, _h));
+			_gui.enqueue<Command::Geometry>(_handle, rect);
+			_gui.execute();
 		}
 
 		/**
@@ -147,13 +148,13 @@ void Component::construct(Genode::Env &env)
 	 * Init sessions to the required external services
 	 */
 	enum { CONFIG_ALPHA = false };
-	static Nitpicker::Connection nitpicker { env, "testnit" };
-	static Timer::Connection     timer     { env };
+	static Gui::Connection   gui   { env, "testnit" };
+	static Timer::Connection timer { env };
 
-	Framebuffer::Mode const mode(256, 256, Framebuffer::Mode::RGB565);
-	nitpicker.buffer(mode, false);
+	Framebuffer::Mode const mode { .area = { 256, 256 } };
+	gui.buffer(mode, false);
 
-	int const scr_w = mode.width(), scr_h = mode.height();
+	int const scr_w = mode.area.w(), scr_h = mode.area.h();
 
 	log("screen is ", mode);
 	if (!scr_w || !scr_h) {
@@ -164,15 +165,16 @@ void Component::construct(Genode::Env &env)
 	/* bad-case test */
 	{
 		/* issue #3232 */
-		Nitpicker::Session::View_handle handle { nitpicker.create_view() };
-		nitpicker.destroy_view(handle);
-		nitpicker.destroy_view(handle);
+		Gui::Session::View_handle handle { gui.create_view() };
+		gui.destroy_view(handle);
+		gui.destroy_view(handle);
 	}
 
 	Genode::Attached_dataspace fb_ds(
-		env.rm(), nitpicker.framebuffer()->dataspace());
+		env.rm(), gui.framebuffer()->dataspace());
 
-	short *pixels = fb_ds.local_addr<short>();
+	typedef Genode::Pixel_rgb888 PT;
+	PT *pixels = fb_ds.local_addr<PT>();
 	unsigned char *alpha = (unsigned char *)&pixels[scr_w*scr_h];
 	unsigned char *input_mask = CONFIG_ALPHA ? alpha + scr_w*scr_h : 0;
 
@@ -183,7 +185,7 @@ void Component::construct(Genode::Env &env)
 	 */
 	for (int i = 0; i < scr_h; i++)
 		for (int j = 0; j < scr_w; j++) {
-			pixels[i*scr_w + j] = (i/8)*32*64 + (j/4)*32 + i*j/256;
+			pixels[i*scr_w + j] = PT((3*i)/8, j, i*j/32);
 			if (CONFIG_ALPHA) {
 				alpha[i*scr_w + j] = (i*2) ^ (j*2);
 				input_mask[i*scr_w + j] = alpha[i*scr_w + j] > 127;
@@ -199,9 +201,9 @@ void Component::construct(Genode::Env &env)
 		/*
 		 * View 'v1' is used as coordinate origin of 'v2' and 'v3'.
 		 */
-		static Test_view v1(&nitpicker, 150, 100, 230, 200, "Eins");
-		static Test_view v2(&nitpicker,  20,  20, 230, 210, "Zwei", &v1);
-		static Test_view v3(&nitpicker,  40,  40, 230, 220, "Drei", &v1);
+		static Test_view v1(&gui, 150, 100, 230, 200, "Eins");
+		static Test_view v2(&gui,  20,  20, 230, 210, "Zwei", &v1);
+		static Test_view v3(&gui,  40,  40, 230, 220, "Drei", &v1);
 
 		tvs.insert(&v1);
 		tvs.insert(&v2);
@@ -215,9 +217,9 @@ void Component::construct(Genode::Env &env)
 	Test_view *tv = nullptr;
 	while (1) {
 
-		while (!nitpicker.input()->pending()) timer.msleep(20);
+		while (!gui.input()->pending()) timer.msleep(20);
 
-		nitpicker.input()->for_each_event([&] (Input::Event const &ev) {
+		gui.input()->for_each_event([&] (Input::Event const &ev) {
 
 			if (ev.press())   key_cnt++;
 			if (ev.release()) key_cnt--;

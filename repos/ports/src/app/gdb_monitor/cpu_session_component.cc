@@ -177,9 +177,9 @@ bool Cpu_session_component::stop_new_threads()
 }
 
 
-Lock &Cpu_session_component::stop_new_threads_lock()
+Mutex &Cpu_session_component::stop_new_threads_mutex()
 {
-	return _stop_new_threads_lock;
+	return _stop_new_threads_mutex;
 }
 
 
@@ -197,7 +197,7 @@ int Cpu_session_component::handle_initial_breakpoint(unsigned long lwpid)
 
 void Cpu_session_component::pause_all_threads()
 {
-	Lock::Guard stop_new_threads_lock_guard(stop_new_threads_lock());
+	Mutex::Guard stop_new_threads_mutex_guard(stop_new_threads_mutex());
 
 	stop_new_threads(true);
 
@@ -212,7 +212,7 @@ void Cpu_session_component::pause_all_threads()
 
 void Cpu_session_component::resume_all_threads()
 {
-Lock::Guard stop_new_threads_guard(stop_new_threads_lock());
+	Mutex::Guard stop_new_threads_guard(stop_new_threads_mutex());
 
 	stop_new_threads(false);
 
@@ -320,7 +320,7 @@ Cpu_session_component::Cpu_session_component(Env &env,
   _ep(ep),
   _md_alloc(md_alloc),
   _core_pd(core_pd),
-  _parent_cpu_session(env.session<Cpu_session>(_id_space_element.id(), args, affinity)),
+  _parent_cpu_session(env.session<Cpu_session>(_id_space_element.id(), args, affinity), *this),
   _signal_ep(signal_ep),
   _new_thread_pipe_write_end(new_thread_pipe_write_end),
   _breakpoint_len(breakpoint_len),

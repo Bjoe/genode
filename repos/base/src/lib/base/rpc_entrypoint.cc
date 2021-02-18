@@ -44,7 +44,7 @@ void Rpc_entrypoint::_dissolve(Rpc_object_base *obj)
 
 void Rpc_entrypoint::_block_until_cap_valid()
 {
-	_cap_valid.lock();
+	_cap_valid.block();
 }
 
 
@@ -57,12 +57,6 @@ void Rpc_entrypoint::reply_signal_info(Untyped_capability reply_cap,
 }
 
 
-void Rpc_entrypoint::activate()
-{
-	_delay_start.unlock();
-}
-
-
 bool Rpc_entrypoint::is_myself() const
 {
 	return (Thread::myself() == this);
@@ -70,20 +64,14 @@ bool Rpc_entrypoint::is_myself() const
 
 
 Rpc_entrypoint::Rpc_entrypoint(Pd_session *pd_session, size_t stack_size,
-                               char const *name, bool start_on_construction,
-                               Affinity::Location location)
+                               char const *name, Affinity::Location location)
 :
-	Thread(Cpu_session::Weight::DEFAULT_WEIGHT, name, _native_stack_size(stack_size), location),
+	Thread(Cpu_session::Weight::DEFAULT_WEIGHT, name, stack_size, location),
 	_cap(Untyped_capability()),
-	_cap_valid(Lock::LOCKED), _delay_start(Lock::LOCKED),
-	_delay_exit(Lock::LOCKED),
 	_pd_session(*pd_session)
 {
 	Thread::start();
 	_block_until_cap_valid();
-
-	if (start_on_construction)
-		activate();
 
 	_exit_cap = manage(&_exit_handler);
 }
@@ -91,12 +79,6 @@ Rpc_entrypoint::Rpc_entrypoint(Pd_session *pd_session, size_t stack_size,
 
 Rpc_entrypoint::~Rpc_entrypoint()
 {
-	/*
-	 * We have to make sure the server loop is running which is only the case
-	 * if the Rpc_entrypoint was actived before we execute the RPC call.
-	 */
-	_delay_start.unlock();
-
 	/* leave server loop */
 	_exit_cap.call<Exit::Rpc_exit>();
 
@@ -111,7 +93,7 @@ Rpc_entrypoint::~Rpc_entrypoint()
 	 * entrypoint thread to leave the scope. Thereby, the 'Ipc_server' object
 	 * will get destructed.
 	 */
-	_delay_exit.unlock();
+	_delay_exit.wakeup();
 
 	join();
 }

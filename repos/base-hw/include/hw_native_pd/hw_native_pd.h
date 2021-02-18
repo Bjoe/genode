@@ -17,10 +17,7 @@
 #include <base/rpc.h>
 #include <pd_session/pd_session.h>
 
-namespace Genode { struct Hw_native_pd; }
-
-
-struct Genode::Hw_native_pd : Pd_session::Native_pd
+struct Genode::Pd_session::Native_pd : Interface
 {
 	virtual void upgrade_cap_slab() = 0;
 
@@ -30,7 +27,7 @@ struct Genode::Hw_native_pd : Pd_session::Native_pd
 	 *********************/
 
 	GENODE_RPC_THROW(Rpc_upgrade_cap_slab, void, upgrade_cap_slab,
-	                 GENODE_TYPE_LIST(Out_of_ram));
+	                 GENODE_TYPE_LIST(Out_of_ram, Out_of_caps));
 	GENODE_RPC_INTERFACE(Rpc_upgrade_cap_slab);
 };
 

@@ -334,14 +334,11 @@ int SUPR3CallVMMR0Ex(PVMR0 pVMR0, VMCPUID idCpu, unsigned uOperation,
 
 	case VMMR0_DO_GVMM_SCHED_HALT:
 	{
-		const uint64_t u64NowGip = RTTimeNanoTS();
-		const uint64_t ns_diff = u64Arg > u64NowGip ? u64Arg - u64NowGip : 0;
+		uint64_t const u64NowGip = RTTimeNanoTS();
+		uint64_t const ns_diff = u64Arg > u64NowGip ? u64Arg - u64NowGip : 0;
 
 		if (!ns_diff)
 			return VINF_SUCCESS;
-
-		uint64_t const tsc_offset = genode_cpu_hz() * ns_diff / (1000*1000*1000);
-		uint64_t const tsc_abs    = Genode::Trace::timestamp() + tsc_offset;
 
 		using namespace Genode;
 
@@ -350,7 +347,7 @@ int SUPR3CallVMMR0Ex(PVMR0 pVMR0, VMCPUID idCpu, unsigned uOperation,
 
 		Vcpu_handler *vcpu_handler = lookup_vcpu_handler(idCpu);
 		Assert(vcpu_handler);
-		vcpu_handler->halt(tsc_abs);
+		vcpu_handler->halt(ns_diff);
 
 		return VINF_SUCCESS;
 	}
@@ -693,12 +690,14 @@ uint64_t genode_cpu_hz()
 
 	if (!cpu_freq) {
 		try {
-			platform_rom().sub_node("tsc").attribute("freq_khz").value(&cpu_freq);
+			platform_rom().with_sub_node("tsc", [&] (Genode::Xml_node const &tsc) {
+				cpu_freq = tsc.attribute_value("freq_khz", cpu_freq); });
 			cpu_freq *= 1000ULL;
-		} catch (...) {
+		} catch (...) { }
+
+		if (cpu_freq == 0) {
 			Genode::error("could not read out CPU frequency");
-			Genode::Lock lock;
-			lock.lock();
+			Genode::sleep_forever();
 		}
 	}
 
@@ -716,7 +715,12 @@ void genode_update_tsc(void (*update_func)(void), Genode::uint64_t update_us)
 	Trace::Timestamp const ticks_min_sleep  = ticks_per_us * 100;
 	Trace::Timestamp       wakeup_absolute  = Trace::timestamp();
 
-	Genode::addr_t sem = Thread::myself()->native_thread().exc_pt_sel + Nova::SM_SEL_EC;
+	/* initialize first time in context of running thread */
+	auto const &exc_base = Thread::myself()->native_thread().exc_pt_sel;
+	request_signal_sm_cap(exc_base + Nova::PT_SEL_PAGE_FAULT,
+	                      exc_base + Nova::SM_SEL_SIGNAL);
+	Genode::addr_t const sem = exc_base + SM_SEL_SIGNAL;
+
 	for (;;) {
 		update_func();
 
@@ -779,7 +783,7 @@ void *operator new (__SIZE_TYPE__ size, int log2_align)
 
 bool create_emt_vcpu(pthread_t * pthread, ::size_t stack,
                      void *(*start_routine)(void *), void *arg,
-                     Genode::Cpu_session * cpu_session,
+                     Genode::Cpu_connection * cpu_connection,
                      Genode::Affinity::Location location,
                      unsigned int cpu_id, const char * name, long)
 {
@@ -797,13 +801,13 @@ bool create_emt_vcpu(pthread_t * pthread, ::size_t stack,
 	if (vmx)
 		vcpu_handler = new (0x10) Vcpu_handler_vmx(genode_env(),
 		                                           stack, start_routine,
-		                                           arg, cpu_session, location,
+		                                           arg, cpu_connection, location,
 		                                           cpu_id, name, pd_vcpus.rpc_cap());
 
 	if (svm)
 		vcpu_handler = new (0x10) Vcpu_handler_svm(genode_env(),
 		                                           stack, start_routine,
-		                                           arg, cpu_session, location,
+		                                           arg, cpu_connection, location,
 		                                           cpu_id, name, pd_vcpus.rpc_cap());
 
 	Assert(!(reinterpret_cast<unsigned long>(vcpu_handler) & 0xf));

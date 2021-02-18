@@ -15,9 +15,7 @@
 #define _CORE__INCLUDE__SIGNAL_SOURCE_COMPONENT_H_
 
 #include <signal_source/rpc_object.h>
-#include <base/allocator_guard.h>
 #include <base/tslab.h>
-#include <base/lock.h>
 #include <base/rpc_client.h>
 #include <base/rpc_server.h>
 #include <util/fifo.h>

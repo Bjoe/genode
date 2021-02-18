@@ -174,8 +174,6 @@ namespace Nova {
 
 		/**
 		 * Map kernel cpu ids to virtual cpu ids.
-		 * Assign first all cores on all packages with thread 0 to virtual
-		 * cpu id numbers, afterwards all (hyper-)threads.
 		 */
 		bool remap_cpu_ids(uint8_t *map_cpus, unsigned const boot_cpu) const {
 			unsigned const num_cpus = cpus();
@@ -191,9 +189,9 @@ namespace Nova {
 				return true;
 
 			/* assign remaining cores and afterwards all threads to the ids */
-			for (uint8_t thread = 0; thread < 255; thread++) {
-				for (uint8_t package = 0; package < 255; package++) {
-					for (uint8_t core = 0; core < 255; core++) {
+			for (uint8_t package = 0; package < 255; package++) {
+				for (uint8_t core = 0; core < 255; core++) {
+					for (uint8_t thread = 0; thread < 255; thread++) {
 						for (unsigned i = 0; i < cpu_max(); i++) {
 							if (i == boot_cpu || !is_cpu_enabled(i))
 								continue;
@@ -215,6 +213,18 @@ namespace Nova {
 			}
 			return false;
 		}
+
+		template <typename FUNC>
+		void for_each_enabled_cpu(FUNC const &func) const
+		{
+			for (unsigned i = 0; i < cpu_max(); i++) {
+				Cpu_desc const * cpu = cpu_desc_of_cpu(i);
+				if (!is_cpu_enabled(i)) continue;
+				if (!cpu) return;
+				func(*cpu, i);
+			}
+		}
+
 	} __attribute__((packed));
 
 
@@ -226,7 +236,13 @@ namespace Nova {
 	/**
 	 * Ec operations
 	 */
-	enum Ec_op { EC_RECALL = 0U, EC_YIELD = 1U, EC_DONATE_SC = 2U, EC_RESCHEDULE = 3U };
+	enum Ec_op {
+		EC_RECALL = 0U,
+		EC_YIELD  = 1U,
+		EC_DONATE_SC = 2U,
+		EC_RESCHEDULE = 3U,
+		EC_MIGRATE = 4U,
+	};
 
 	/**
 	 * Pd operations
@@ -550,6 +566,7 @@ namespace Nova {
 				mword_t cr8, efer;
 				unsigned long long star;
 				unsigned long long lstar;
+				unsigned long long cstar;
 				unsigned long long fmask;
 				unsigned long long kernel_gs_base;
 				unsigned tpr;
@@ -609,6 +626,8 @@ namespace Nova {
 		inline void write_star(mword_t value) { star = value; }
 		inline mword_t read_lstar() { return lstar; }
 		inline void write_lstar(mword_t value) { lstar = value; }
+		inline mword_t read_cstar() { return cstar; }
+		inline void write_cstar(mword_t value) { cstar = value; }
 		inline mword_t read_fmask() { return fmask; }
 		inline void write_fmask(mword_t value) { fmask = value; }
 		inline mword_t read_kernel_gs_base() { return kernel_gs_base; }
@@ -640,6 +659,8 @@ namespace Nova {
 		inline void write_star(mword_t) { }
 		inline mword_t read_lstar() { return 0UL; }
 		inline void write_lstar(mword_t) { }
+		inline mword_t read_cstar() { return 0UL; }
+		inline void write_cstar(mword_t) { }
 		inline mword_t read_fmask() { return 0UL; }
 		inline void write_fmask(mword_t) { }
 		inline mword_t read_kernel_gs_base() { return 0UL; }
@@ -744,8 +765,9 @@ namespace Nova {
 	enum {
 		PT_SEL_PAGE_FAULT = 0xe,
 		PT_SEL_PARENT     = 0x1a,  /* convention on Genode */
-		PT_SEL_MAIN_EC    = 0x1c,  /* convention on Genode */
+		EC_SEL_THREAD     = 0x1c,  /* convention on Genode */
 		PT_SEL_STARTUP    = 0x1e,
+		SM_SEL_SIGNAL     = 0x1e,  /* alias of PT_SEL_STARTUP */
 		PT_SEL_RECALL     = 0x1f,
 		SM_SEL_EC         = 0x1d,  /* convention on Genode */
 	};
